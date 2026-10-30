@@ -1,0 +1,24 @@
+# Plantilla mínima de .ramalio.toml (E9-S2 R3).
+#
+# Copia este archivo al raíz de tu repositorio y ajusta los valores marcados.
+# NO habilita ninguna capability opcional (tmux, runtime, ports, tunnel,
+# integrations): un proyecto Git-only funciona con sólo esto (INV-02/R4).
+#
+# REGLA: no pongas secretos/tokens/credenciales aquí (INV-04/R13).
+
+[project]
+name = "example"          # DECIDIR: identidad estable del proyecto
+base_branch = "main"      # DECIDIR: rama base (autoridad Git del proyecto)
+
+[target]
+# DECIDIR: convención de unidad de trabajo del proyecto (regex + ejemplo válido).
+regex = "^[a-z0-9]+(-[a-z0-9]+)*$"
+example = "my-feature"
+case_sensitive = false
+
+[worktree]
+directory = ".local-wt"   # DECIDIR: dónde viven los worktrees (relativo al repo)
+pattern = "{target}"
+
+[branch]
+pattern = "{target}"      # DECIDIR: convención de branch (p.ej. "spec/{target}")

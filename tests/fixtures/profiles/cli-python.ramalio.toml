@@ -1,0 +1,21 @@
+# Profile 3: CLI/Python project, no Docker, no ports.
+# Declares only what a pure-Python tool needs; capabilities stay opt-in.
+
+[project]
+name = "cli-python"
+base_branch = "main"
+
+[target]
+regex = "^[A-Z]+-[0-9]+$"
+example = "PROJ-123"
+case_sensitive = true
+
+[worktree]
+directory = ".local-wt"
+pattern = "wt-{target}"
+
+[branch]
+pattern = "task/{target}"
+
+[capabilities.venv]
+enabled = false

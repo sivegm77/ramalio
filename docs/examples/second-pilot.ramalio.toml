@@ -1,0 +1,46 @@
+# Segundo proyecto piloto de ramalio (E9-S0).
+#
+# Perfil DELIBERADAMENTE distinto a SiVale para probar el desacoplamiento del
+# core (INV-01/INV-02). Diferencias materiales:
+#   - librería/CLI Python (no aplicación web);
+#   - SIN runtime containerizado (no Docker Compose);
+#   - SIN puertos exclusivos;
+#   - SIN tmux, Kiro ni zrok obligatorios;
+#   - convención de target distinta (issue-<n>-<slug>);
+#   - branch naming distinto (wt/<target>);
+#   - bootstrap mínimo.
+#
+# Todo se expresa por configuración; el core no cambia.
+
+[project]
+name = "pylib-tools"
+base_branch = "main"
+
+# Convención de target distinta a SiVale: issue-<numero>-<slug-kebab>.
+[target]
+regex = "^issue-[0-9]+-[a-z0-9]+(-[a-z0-9]+)*$"
+example = "issue-142-add-retry-helper"
+case_sensitive = false
+
+# Normalización simple: sin prefijo preservado (preserve_prefix_segments = 0),
+# a diferencia de SiVale que preserva 2 segmentos.
+[target.normalization]
+trim = true
+lowercase_slug = true
+replace_spaces = "-"
+collapse_dashes = true
+slug_separator = "-"
+preserve_prefix_segments = 0
+
+# Ubicación de worktrees distinta.
+[worktree]
+directory = ".worktrees"
+pattern = "{target}"
+
+# Branch naming distinto a SiVale (spec/{target}).
+[branch]
+pattern = "wt/{target}"
+delete_on_destroy = true
+
+# Sin [ports], sin [capabilities.*], sin [integrations.*]:
+# el proyecto es Git-only y el lifecycle completo funciona igual (R6/AC-09).

@@ -1,0 +1,147 @@
+# SiVale como PROYECTO CLIENTE de ramalio (E8-S0).
+#
+# Este archivo materializa las convenciones operativas reales de SiVale usando
+# EXCLUSIVAMENTE contratos ya estabilizados en E0-E7 (configuración, capabilities
+# e integrations). No introduce ninguna regla de SiVale en el core del producto.
+#
+# Secretos, tokens, .env, el identificador de developer y el rango de puertos
+# personal NO viven aquí: son preferencias personales/entorno seguro (INV-04/R12).
+
+[project]
+name = "sivale-zurich"
+base_branch = "main"
+
+# Convención de target de SiVale: E<etapa>-S<spec>-<slug-kebab>.
+# El core no conoce este patrón; se expresa como regex de configuración (R2).
+[target]
+regex = "^E[0-9]+-S[0-9]+-[a-z0-9]+(-[a-z0-9]+)*$"
+example = "E7-S8-convergencia-schema-tests"
+case_sensitive = true
+
+# Preserva los dos primeros segmentos (E<n>, S<n>) verbatim y normaliza el slug.
+# La regla es genérica (preserve_prefix_segments); no hay lógica E<n>-S<n> en el core (R3).
+[target.normalization]
+trim = true
+lowercase_slug = true
+replace_spaces = "-"
+collapse_dashes = true
+slug_separator = "-"
+preserve_prefix_segments = 2
+
+# Ubicación canónica de worktrees de SiVale, dentro del boundary de E7-S2 (R5).
+[worktree]
+directory = ".local-wt"
+pattern = "{target}"
+
+# Convención de branch de SiVale: spec/<target> (R4).
+[branch]
+pattern = "spec/{target}"
+# Conservador: destroy preserva la branch por defecto.
+delete_on_destroy = false
+
+# Pool de puertos por workspace paralelo (E6-S1, R6). El 'start' concreto puede
+# ajustarse por proyecto; el aislamiento por developer es una preferencia personal.
+[ports]
+enabled = true
+start = 8100
+size = 20
+
+# Runtime Docker Compose aislado por target (E6-S2, R7). project_pattern produce
+# un Compose project name determinista y único por workspace. El puerto reservado
+# se inyecta bajo una variable definida por el proyecto (sin nombre SiVale-specific).
+#
+# E10-S1: workspace provisioning del runtime durante init/adopt. build_on_provision
+# construye la imagen desde el worktree actual; materialize_env_file copia el .env
+# de la raíz del repositorio al worktree antes de arrancar Compose (sin imprimir su
+# contenido; nunca se versiona). base_project_pattern deriva la identidad del
+# runtime base compartido (scope 'project') para el data provisioning de E10-S3.
+# remove_volumes_on_destroy retira los volúmenes del target en destroy (requerido
+# por el data cleanup delegado de abajo). compose_files añade capas -f adicionales
+# sólo cuando el archivo existe en el worktree (equivalente al
+# docker-compose.override.yml opcional del harness legacy; E10-S1 §12).
+#
+# Limitación conocida (E10-S1 §13): base_project_pattern sólo sustituye
+# {project}; NO ofrece un placeholder para un identificador personal del
+# desarrollador (el core no debe conocer KIRO_DEVELOPER, INV-007/INV-008). Si
+# el runtime base real es developer-scoped, ese matiz debe resolverse en la
+# configuración personal del desarrollador, fuera de este archivo compartido.
+[capabilities.runtime]
+driver = "docker-compose"
+compose_file = "docker-compose.yml"
+compose_files = ["docker-compose.override.yml"]
+project_pattern = "{project}-{target}"
+base_project_pattern = "{project}"
+port_env = "APP_HTTP_PORT"
+provision_on_init = true
+provision_on_adopt = true
+build_on_provision = true
+materialize_env_file = ".env"
+remove_volumes_on_destroy = true
+
+# Data provisioning PostgreSQL aislado por target (E10-S3). Copia la base
+# PostgreSQL del runtime base compartido (scope 'project') hacia una base aislada
+# del target (scope 'workspace') vía el runtime command executor de E10-S1, sin
+# que el provider conozca Docker Compose. No hay usuario/contraseña/base en el
+# TOML: el provider los resuelve dentro de cada servicio (POSTGRES_USER/
+# POSTGRES_DB) y nunca lee POSTGRES_PASSWORD. cleanup_mode="runtime" delega la
+# retirada de volúmenes al runtime (requiere remove_volumes_on_destroy=true
+# arriba); no existe drop database automático.
+[capabilities.data]
+enabled = true
+provider = "postgres"
+on_init = true
+on_adopt = true
+runtime_service = "db"
+readiness_timeout = 30
+cleanup_mode = "runtime"
+
+# Bootstrap de dependencias Composer + readiness (E10-S2). Se ejecuta dentro del
+# runtime del target (executor="runtime") con la identidad del developer del host
+# (runtime_user="host" -> <uid>:<gid>), reproduciendo la sonda de permisos y la
+# instalación de Composer del harness legacy. El executable es fijo ('composer');
+# el proyecto sólo controla los argumentos. Los artifacts requeridos son
+# convención del proyecto (no hay 'laravel' ni paths de framework en el core).
+[capabilities.bootstrap]
+enabled = true
+provider = "composer"
+on_init = true
+on_adopt = true
+executor = "runtime"
+runtime_service = "app"
+runtime_workdir = "/var/www/html"
+runtime_user = "host"
+arguments = ["install", "--no-interaction", "--prefer-dist", "--no-progress"]
+writable_paths = ["storage", "bootstrap/cache"]
+
+[capabilities.bootstrap.environment]
+COMPOSER_HOME = "/tmp/composer"
+
+[[capabilities.bootstrap.artifacts]]
+path = "vendor/autoload.php"
+kind = "file"
+
+[[capabilities.bootstrap.artifacts]]
+path = "vendor/bin/pest"
+kind = "executable"
+
+[[capabilities.bootstrap.artifacts]]
+path = "vendor/bin/pint"
+kind = "executable"
+
+[[capabilities.bootstrap.artifacts]]
+path = "vendor/bin/deptrac"
+kind = "executable"
+
+# Sesión tmux persistente por target (E5-S0, R9). Opcional.
+[capabilities.tmux]
+enabled = true
+session_pattern = "sivale-{target}"
+create_on_init = true
+attach_on_init = false
+stop_policy = "keep"
+destroy_policy = "kill"
+
+# Kiro como integration opcional, abierta con `--open kiro` (E5-S1/E5-S2, R10).
+[integrations.kiro]
+enabled = true
+command = ["kiro-cli"]

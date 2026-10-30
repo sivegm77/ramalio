@@ -1,0 +1,31 @@
+# Profile 2: web project declaring runtime capabilities and integrations.
+# E1 only loads this configuration; nothing here is executed (AC-08, AC-09).
+
+[project]
+name = "web-runtime"
+base_branch = "develop"
+
+[target]
+regex = "^(feature|bugfix)/[a-z0-9-]+$"
+example = "feature/login-form"
+case_sensitive = true
+
+[target.normalization]
+trim = true
+lowercase_slug = true
+replace_spaces = "-"
+collapse_dashes = true
+
+[worktree]
+directory = ".worktrees"
+pattern = "{target}"
+
+[branch]
+pattern = "spec/{target}"
+
+[capabilities.tmux]
+enabled = true
+
+[integrations.kiro]
+enabled = true
+command = ["kiro-cli", "--v3"]

@@ -1,0 +1,18 @@
+# Profile 1: simple project, Git worktrees only.
+# No capabilities, no integrations, no stack assumptions.
+
+[project]
+name = "simple-git"
+base_branch = "main"
+
+[target]
+regex = "^[a-z0-9-]+$"
+example = "my-feature"
+case_sensitive = false
+
+[worktree]
+directory = ".local-wt"
+pattern = "{target}"
+
+[branch]
+pattern = "{target}"

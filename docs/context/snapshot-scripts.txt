@@ -1,0 +1,1388 @@
+# Snapshot
+
+-------------------------------
+== .kiro/scripts/compose-project.sh ==
+-------------------------------
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+    printf 'COMPOSE_PROJECT_BLOCKED\n' >&2
+    printf 'Code: %s\n' "$1" >&2
+    printf 'Detail: %s\n' "$2" >&2
+    exit 1
+}
+
+[[ $# -ge 3 ]] || fail "INVALID_ARGUMENT_COUNT" "usage: bash .kiro/scripts/compose-project.sh <project-directory> <project-name> <compose-command> [args...]"
+project_directory_input="$1"
+project_name="$2"
+shift 2
+
+command -v docker >/dev/null 2>&1 || fail "DOCKER_UNAVAILABLE" "docker is required"
+command -v env >/dev/null 2>&1 || fail "ENV_UNAVAILABLE" "env is required"
+
+project_directory="$(cd "$project_directory_input" 2>/dev/null && pwd -P || true)"
+[[ -n "$project_directory" ]] || fail "PROJECT_DIRECTORY_INVALID" "$project_directory_input"
+[[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "PROJECT_NAME_INVALID" "$project_name"
+[[ -f "$project_directory/docker-compose.yml" ]] || fail "COMPOSE_FILE_MISSING" "$project_directory/docker-compose.yml"
+[[ -f "$project_directory/.env" ]] || fail "ENV_FILE_MISSING" "$project_directory/.env"
+
+# Docker Compose gives process-environment variables precedence over values
+# from --env-file. The harness deliberately removes every key declared by this
+# project's .env from the child environment so the selected project's .env is
+# authoritative for interpolation. Values are never printed or evaluated.
+declare -A unset_keys=()
+compose_control_vars=(
+    COMPOSE_PROJECT_NAME
+    COMPOSE_FILE
+    COMPOSE_PROFILES
+    COMPOSE_PATH_SEPARATOR
+    COMPOSE_ENV_FILES
+    COMPOSE_DISABLE_ENV_FILE
+    COMPOSE_MENU
+    COMPOSE_PARALLEL_LIMIT
+    COMPOSE_IGNORE_ORPHANS
+    COMPOSE_REMOVE_ORPHANS
+    COMPOSE_ANSI
+    COMPOSE_STATUS_STDOUT
+    COMPOSE_PROGRESS
+    COMPOSE_EXPERIMENTAL
+    COMPOSE_BAKE
+)
+for key in "${compose_control_vars[@]}"; do
+    unset_keys["$key"]=1
+done
+
+while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*= ]] || continue
+    unset_keys["${BASH_REMATCH[2]}"]=1
+done < "$project_directory/.env"
+
+unset_args=()
+for key in "${!unset_keys[@]}"; do
+    unset_args+=( -u "$key" )
+done
+
+compose_args=(
+    compose
+    --project-directory "$project_directory"
+    --project-name "$project_name"
+    --env-file "$project_directory/.env"
+    -f "$project_directory/docker-compose.yml"
+)
+if [[ -f "$project_directory/docker-compose.override.yml" ]]; then
+    compose_args+=( -f "$project_directory/docker-compose.override.yml" )
+fi
+compose_args+=( "$@" )
+
+# Keep PWD aligned with the selected project for tools/tests that inspect it,
+# while identity still comes from explicit CLI options above.
+cd "$project_directory"
+exec env "${unset_args[@]}" docker "${compose_args[@]}"
+
+
+-------------------------------
+== .kiro/scripts/worktree-adopt.sh ==
+-------------------------------
+#!/usr/bin/env bash
+set -euo pipefail
+
+blocked() {
+    printf 'ADOPT_BLOCKED\n' >&2
+    printf 'REASON=%s\n' "$1" >&2
+    printf 'DETAIL=%s\n' "$2" >&2
+    exit 1
+}
+
+[[ $# -eq 1 ]] || blocked "INVALID_ARGUMENT_COUNT" "usage: bash .kiro/scripts/worktree-adopt.sh <ID>-<slug>"
+target="$1"
+[[ "$target" =~ ^E[0-9]+-S[0-9]+-[a-z0-9]+(-[a-z0-9]+)*$ ]] || blocked "INVALID_SPEC_TARGET" "target must match E<number>-S<number>-<kebab-slug>"
+
+config="$HOME/.config/kiro/developer.env"
+[[ -f "$config" ]] || blocked "DEVELOPER_CONFIG_MISSING" "$config"
+# shellcheck disable=SC1090
+source "$config"
+
+[[ -n "${KIRO_DEVELOPER:-}" ]] || blocked "DEVELOPER_CONFIG_INVALID" "KIRO_DEVELOPER is required in $config"
+[[ -n "${KIRO_PROJECT_ROOT:-}" ]] || blocked "DEVELOPER_CONFIG_INVALID" "KIRO_PROJECT_ROOT is required in $config"
+[[ -n "${KIRO_PORT_RANGE_START:-}" ]] || blocked "DEVELOPER_CONFIG_INVALID" "KIRO_PORT_RANGE_START is required in $config"
+KIRO_PORT_RANGE_SIZE="${KIRO_PORT_RANGE_SIZE:-20}"
+
+[[ "$KIRO_DEVELOPER" =~ ^[a-z0-9][a-z0-9-]*$ ]] || blocked "INVALID_DEVELOPER" "KIRO_DEVELOPER must be lowercase kebab-safe"
+[[ "$KIRO_PORT_RANGE_START" =~ ^[0-9]+$ ]] || blocked "INVALID_PORT_RANGE" "KIRO_PORT_RANGE_START must be numeric"
+[[ "$KIRO_PORT_RANGE_SIZE" =~ ^[1-9][0-9]*$ ]] || blocked "INVALID_PORT_RANGE" "KIRO_PORT_RANGE_SIZE must be a positive integer"
+for cmd in flock ss docker tar sha256sum stat readlink; do
+    command -v "$cmd" >/dev/null 2>&1 || blocked "${cmd^^}_UNAVAILABLE" "$cmd is required"
+done
+docker compose version >/dev/null 2>&1 || blocked "DOCKER_COMPOSE_UNAVAILABLE" "Docker Compose v2 is required"
+
+project_root="$(cd "$KIRO_PROJECT_ROOT" 2>/dev/null && pwd -P || true)"
+[[ -n "$project_root" ]] || blocked "PROJECT_ROOT_INVALID" "$KIRO_PROJECT_ROOT"
+resolved_root="$(git -C "$project_root" rev-parse --show-toplevel 2>/dev/null || true)"
+[[ "$resolved_root" == "$project_root" ]] || blocked "PROJECT_ROOT_INVALID" "KIRO_PROJECT_ROOT must be the main repository root"
+[[ -d "$project_root/.git" ]] || blocked "PROJECT_ROOT_NOT_MAIN_WORKTREE" "$project_root must be the main worktree"
+compose_runner="$project_root/.kiro/scripts/compose-project.sh"
+[[ -f "$compose_runner" ]] || blocked "COMPOSE_RUNNER_MISSING" "$compose_runner"
+for required in .kiro docker-compose.yml .env; do
+    [[ -e "$project_root/$required" ]] || blocked "BASE_FILE_MISSING" "$project_root/$required"
+done
+
+base_compose_name="$(awk -F= '$1=="COMPOSE_PROJECT_NAME" {print substr($0,index($0,"=")+1); exit}' "$project_root/.env")"
+expected_base_compose="zurich-$KIRO_DEVELOPER"
+[[ "$base_compose_name" == "$expected_base_compose" ]] \
+    || blocked "BASE_COMPOSE_PROJECT_MISMATCH" "expected COMPOSE_PROJECT_NAME=$expected_base_compose in base .env"
+
+target_lower="${target,,}"
+branch="spec/$target_lower"
+base_branch="main"
+worktree="$project_root/.local-wt/$target"
+compose_project="zurich-$KIRO_DEVELOPER-$target_lower"
+runtime_dir="$project_root/.local-wt"
+ports_file="$runtime_dir/.ports.tsv"
+lock_file="$runtime_dir/.ports.lock"
+
+runtime_dir_is_safe() {
+    local resolved
+    [[ "$runtime_dir" == "$project_root/.local-wt" ]] || return 1
+    [[ -d "$runtime_dir" ]] || return 1
+    [[ ! -L "$runtime_dir" ]] || return 1
+    resolved="$(cd "$runtime_dir" 2>/dev/null && pwd -P || true)"
+    [[ -n "$resolved" && "$resolved" == "$runtime_dir" ]]
+}
+
+# Phase A remains read-only: reject an existing unsafe runtime path without
+# creating .local-wt merely to perform preflight validation.
+if [[ -e "$runtime_dir" || -L "$runtime_dir" ]]; then
+    runtime_dir_is_safe || blocked "RUNTIME_DIR_UNSAFE" "$runtime_dir must be a physical directory directly under the project root"
+fi
+
+# ------------------------------
+# Phase A: read-only preconditions
+# ------------------------------
+[[ ! -e "$worktree" ]] || blocked "TARGET_WORKTREE_ALREADY_EXISTS_ELSEWHERE" "$worktree"
+if git -C "$project_root" worktree list --porcelain | awk -v wt="$worktree" '$1=="worktree" && $2==wt {found=1} END {exit(found?0:1)}'; then
+    blocked "TARGET_WORKTREE_ALREADY_EXISTS_ELSEWHERE" "$worktree"
+fi
+
+current_branch="$(git -C "$project_root" branch --show-current 2>/dev/null || true)"
+if [[ "$current_branch" != "$base_branch" && "$current_branch" != "$branch" ]]; then
+    blocked "UNSUPPORTED_SOURCE_BRANCH" "current_branch=${current_branch:-DETACHED}; allowed=$base_branch or $branch"
+fi
+[[ -n "$current_branch" ]] || blocked "UNSUPPORTED_SOURCE_BRANCH" "detached HEAD is not an adoptable source state"
+
+if ! git -C "$project_root" diff --cached --quiet --; then
+    blocked "STAGED_CHANGES_PRESENT" "index must be empty before adoption"
+fi
+
+hard_immutable_paths=(
+    migration/legacy-source
+    migration/legacy-source.manifest.sha256
+    docs/architecture/high-level-architecture.md
+    docs/migration/macro-migration-plan.md
+)
+protected_status="$(git -C "$project_root" status --porcelain=v1 -- "${hard_immutable_paths[@]}" 2>/dev/null || true)"
+[[ -z "$protected_status" ]] || blocked "HARD_IMMUTABLE_CHANGED" "hard-immutable implementation authority changed in source checkout"
+
+spec_dir="$project_root/.kiro/specs/$target"
+for artifact in requirements.md design.md tasks.md; do
+    [[ -f "$spec_dir/$artifact" ]] || blocked "MISSING_SPEC_ARTIFACT" "$spec_dir/$artifact"
+done
+
+# Supported legacy states only:
+# A) main with no canonical local branch;
+# B) canonical branch checked out in the main worktree.
+branch_exists=0
+if git -C "$project_root" show-ref --verify --quiet "refs/heads/$branch"; then
+    branch_exists=1
+fi
+branch_worktree="$(git -C "$project_root" worktree list --porcelain | awk -v ref="refs/heads/$branch" '
+    $1=="worktree" {wt=$2}
+    $1=="branch" && $2==ref {print wt; exit}
+')"
+if [[ -n "$branch_worktree" && "$branch_worktree" != "$project_root" ]]; then
+    blocked "TARGET_WORKTREE_ALREADY_EXISTS_ELSEWHERE" "$branch is already assigned to $branch_worktree"
+fi
+if [[ "$current_branch" == "$base_branch" && $branch_exists -eq 1 ]]; then
+    blocked "UNSUPPORTED_SOURCE_BRANCH" "$branch exists locally but is not the active source branch"
+fi
+if [[ "$current_branch" == "$branch" && $branch_exists -ne 1 ]]; then
+    blocked "UNSUPPORTED_SOURCE_BRANCH" "active canonical branch could not be resolved"
+fi
+if [[ "$current_branch" == "$branch" && "$branch_worktree" != "$project_root" ]]; then
+    blocked "TARGET_WORKTREE_ALREADY_EXISTS_ELSEWHERE" "$branch is not owned by the main checkout"
+fi
+
+set +e
+git -C "$project_root" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1
+remote_rc=$?
+set -e
+if [[ $remote_rc -eq 0 ]]; then
+    blocked "REMOTE_BRANCH_ALREADY_EXISTS" "origin/$branch"
+elif [[ $remote_rc -ne 2 ]]; then
+    blocked "REMOTE_BRANCH_CHECK_FAILED" "$branch"
+fi
+
+source_head="$(git -C "$project_root" rev-parse HEAD 2>/dev/null || true)"
+[[ "$source_head" =~ ^[0-9a-f]{40}$ ]] || blocked "SOURCE_HEAD_INVALID" "unable to resolve source HEAD"
+source_branch="$current_branch"
+case_a=0
+[[ "$source_branch" == "$base_branch" ]] && case_a=1
+
+# Case B may contain historical commits. Hard-immutable authority may not have
+# been changed by commits unique to the canonical branch.
+if [[ "$source_branch" == "$branch" ]]; then
+    immutable_merge_base="$(git -C "$project_root" merge-base "$base_branch" "$source_head" 2>/dev/null || true)"
+    [[ "$immutable_merge_base" =~ ^[0-9a-f]{40}$ ]] \
+        || blocked "UNSUPPORTED_SOURCE_BRANCH" "cannot resolve merge-base between $base_branch and $branch"
+    set +e
+    git -C "$project_root" diff --quiet "$immutable_merge_base" "$source_head" -- "${hard_immutable_paths[@]}"
+    immutable_diff_rc=$?
+    set -e
+    if [[ $immutable_diff_rc -eq 1 ]]; then
+        blocked "HARD_IMMUTABLE_CHANGED" "hard-immutable implementation authority changed in committed history of $branch"
+    elif [[ $immutable_diff_rc -ne 0 ]]; then
+        blocked "HARD_IMMUTABLE_CHECK_FAILED" "unable to compare hard-immutable paths against merge-base $immutable_merge_base"
+    fi
+fi
+
+# -------------------------------------
+# Transaction state (before first temp)
+# -------------------------------------
+success=0
+tmp_created=0
+runtime_dir_created_by_adopt=0
+ports_file_created_by_adopt=0
+lock_file_created_by_adopt=0
+port_allocated=0
+port_registered=0
+worktree_created=0
+worktree_mutation_started=0
+branch_created_by_adopt=0
+source_detached=0
+source_mutation_started=0
+source_clean_state_recorded=0
+source_clean_fingerprint=""
+source_changed_after_clean=0
+preserve_target_on_rollback=0
+source_restored=0
+docker_may_exist=0
+lock_held=0
+assigned_port=""
+
+# The temporary snapshot may contain uncommitted/untracked source bytes. The
+# EXIT trap is installed immediately after creation so every later failure,
+# including fingerprint/port failures, removes it.
+tmp_dir="$(mktemp -d)"
+tmp_created=1
+early_cleanup() {
+    local rc=$?
+    trap - EXIT
+    [[ -z "${tmp_dir:-}" || ! -e "${tmp_dir:-}" ]] || rm -rf -- "$tmp_dir" || true
+    exit "$rc"
+}
+trap early_cleanup EXIT
+chmod 700 "$tmp_dir"
+tracked_patch="$tmp_dir/tracked.diff"
+tracked_paths="$tmp_dir/tracked-paths.z"
+untracked_paths="$tmp_dir/untracked-paths.z"
+untracked_archive="$tmp_dir/untracked.tar"
+dump_file="$tmp_dir/base-db.dump"
+: > "$dump_file"
+chmod 600 "$dump_file"
+
+untracked_manifest_sha() {
+    local root="$1" list="$2"
+    (
+        while IFS= read -r -d '' path; do
+            local_path="$root/$path"
+            if [[ -L "$local_path" ]]; then
+                type='L'
+                mode="$(stat -c '%a' -- "$local_path")"
+                content_sha="$(readlink -- "$local_path" | sha256sum | awk '{print $1}')"
+            elif [[ -f "$local_path" ]]; then
+                type='F'
+                mode="$(stat -c '%a' -- "$local_path")"
+                content_sha="$(sha256sum -- "$local_path" | awk '{print $1}')"
+            else
+                printf 'unsupported untracked path type: %s\n' "$path" >&2
+                exit 91
+            fi
+            printf '%s\0%s\0%s\0%s\0' "$type" "$mode" "$path" "$content_sha"
+        done < "$list"
+    ) | sha256sum | awk '{print $1}'
+}
+
+working_fingerprint() {
+    local root="$1" list head tracked_sha untracked_list_sha untracked_sha
+    list="$(mktemp "$tmp_dir/fingerprint-untracked.XXXXXX")"
+    git -C "$root" ls-files --others --exclude-standard -z --exclude='.local-wt/' > "$list"
+    head="$(git -C "$root" rev-parse HEAD)"
+    tracked_sha="$(git -C "$root" diff --binary --full-index HEAD -- | sha256sum | awk '{print $1}')"
+    untracked_list_sha="$(sha256sum "$list" | awk '{print $1}')"
+    untracked_sha="$(untracked_manifest_sha "$root" "$list")"
+    rm -f "$list"
+    printf '%s\0%s\0%s\0%s\0' "$head" "$tracked_sha" "$untracked_list_sha" "$untracked_sha" | sha256sum | awk '{print $1}'
+}
+
+port_entry_remove_locked() {
+    local tmp
+    [[ $port_registered -eq 1 ]] || return 0
+    tmp="$(mktemp "$tmp_dir/ports.XXXXXX")"
+    awk -F '\t' -v t="$target" -v w="$worktree" '!(($2==t)||($3==w))' "$ports_file" > "$tmp"
+    mv "$tmp" "$ports_file"
+    port_registered=0
+}
+
+restore_source_snapshot() {
+    # Target must already be removed for Case B so the canonical branch can be
+    # checked out in the main worktree.
+    if [[ "$source_branch" == "$branch" ]]; then
+        git -C "$project_root" switch "$branch" >/dev/null 2>&1 || return 1
+    else
+        git -C "$project_root" switch "$base_branch" >/dev/null 2>&1 || return 1
+    fi
+
+    # Normalize only the originally tracked dirty paths to SOURCE_HEAD first.
+    # This makes restoration idempotent whether cleanup stopped at 0%, 50% or
+    # 100%, then reapplies the exact binary patch captured before adoption.
+    if [[ -s "$tracked_paths" ]]; then
+        git -C "$project_root" restore --source="$source_head" --worktree \
+            --pathspec-from-file="$tracked_paths" --pathspec-file-nul || return 1
+    fi
+    if [[ -s "$tracked_patch" ]]; then
+        (cd "$project_root" && git apply --binary --whitespace=nowarn "$tracked_patch") || return 1
+    fi
+
+    # Normalize only the originally inventoried untracked paths, never any
+    # unrelated path, then restore their exact archived bytes.
+    if [[ -s "$untracked_paths" ]]; then
+        while IFS= read -r -d '' path; do
+            rm -f -- "$project_root/$path" || return 1
+        done < "$untracked_paths"
+        (cd "$project_root" && tar -xf "$untracked_archive") || return 1
+    fi
+
+    restored_fingerprint="$(working_fingerprint "$project_root")" || return 1
+    [[ "$restored_fingerprint" == "$source_fingerprint" ]] || return 1
+    source_restored=1
+    return 0
+}
+
+compose_run() {
+    local directory="$1" project="$2"
+    shift 2
+    bash "$compose_runner" "$directory" "$project" "$@"
+}
+
+bootstrap_php_dependencies() {
+    local host_uid host_gid name norm_output norm_rc probe_output probe_rc
+    host_uid="$(id -u)"
+    host_gid="$(id -g)"
+    printf 'Installing PHP dependencies...\n' >&2
+    # Two-phase, FAIL-CLOSED permission preflight before composer. The container
+    # ENTRYPOINT is the single source of truth for the permission model
+    # (idempotent chmod + POSIX ACLs); no manual chmod competes with it.
+    #
+    # PHASE 1 — root normalization: boot the container as root with a trivial
+    # command so the real entrypoint applies/re-applies chmod+setfacl. Failure
+    # exits non-zero -> BOOTSTRAP_PERMS_FAILED.
+    #
+    # PHASE 2 — effective developer writability: run as the developer UID:GID
+    # (the exact identity composer will use), WITHOUT chmod/setfacl, and actually
+    # create+delete a probe inside storage/ and bootstrap/cache/. This proves the
+    # non-owner developer has real write access; a root-only phase 1 could
+    # otherwise mask a false positive. Failure here is BOOTSTRAP_PERMS_FAILED,
+    # never DEPENDENCY_INSTALL_FAILED.
+    set +e
+    norm_output="$(compose_run "$worktree" "$compose_project" \
+        run --rm -T --user 0:0 app true 2>&1)"
+    norm_rc=$?
+    set -e
+    [[ $norm_rc -eq 0 ]] \
+        || blocked "BOOTSTRAP_PERMS_FAILED" "root entrypoint normalization failed (rc=${norm_rc}): ${norm_output}"
+    set +e
+    probe_output="$(compose_run "$worktree" "$compose_project" \
+        run --rm -T --user "${host_uid}:${host_gid}" --entrypoint sh app \
+        -c 'for d in /var/www/html/storage /var/www/html/bootstrap/cache; do t="$d/.kiro-dev-perms-probe.$$"; ( : > "$t" ) 2>/dev/null || { echo "developer cannot write: $d" >&2; exit 32; }; rm -f "$t" 2>/dev/null || { echo "developer cannot remove: $d" >&2; exit 33; }; done; echo "developer-perms-ok"' 2>&1)"
+    probe_rc=$?
+    set -e
+    { [[ $probe_rc -eq 0 ]] && grep -q 'developer-perms-ok' <<< "$probe_output"; } \
+        || blocked "BOOTSTRAP_PERMS_FAILED" "developer UID:GID cannot write storage/bootstrap.cache after normalization (rc=${probe_rc}): ${probe_output}"
+    # Composer (and its post-autoload-dump `@php artisan package:discover --ansi`
+    # hook) writes progress to stdout. This is the ONLY compose_run in the
+    # lifecycle whose stdout would otherwise reach the script's stdout, which is
+    # the structured channel: on success stdout must contain ONLY the worktree
+    # path so `worktree="$(worktree-adopt.sh ...)"; cd "$worktree"` works. Redirect
+    # this command's stdout to stderr so the output stays visible to the user
+    # without contaminating the structured path line. `>&2` does not alter the
+    # command's exit status, so `|| blocked ...` still fail-closes on composer
+    # failure with DEPENDENCY_INSTALL_FAILED.
+    compose_run "$worktree" "$compose_project" \
+        run --rm -T --user "${host_uid}:${host_gid}" -e COMPOSER_HOME=/tmp/composer app \
+        composer install --no-interaction --prefer-dist --no-progress >&2 \
+        || blocked "DEPENDENCY_INSTALL_FAILED" "composer install failed for worktree dependency bootstrap"
+    [[ -f "$worktree/vendor/autoload.php" ]] || blocked "DEPENDENCY_READINESS_FAILED" "missing required artifact: vendor/autoload.php"
+    for name in pest pint deptrac; do
+        [[ -x "$worktree/vendor/bin/$name" ]] || blocked "DEPENDENCY_READINESS_FAILED" "missing or non-executable required artifact: vendor/bin/$name"
+    done
+    printf 'PHP dependencies ready\n' >&2
+}
+
+target_compose_identity_is_safe() {
+    local env_project
+    [[ "$compose_project" == "zurich-$KIRO_DEVELOPER-$target_lower" ]] || return 1
+    [[ "$compose_project" != "$expected_base_compose" ]] || return 1
+    [[ "$worktree" == "$runtime_dir/$target" ]] || return 1
+    [[ -f "$worktree/.env" ]] || return 1
+    env_project="$(awk -F= '$1=="COMPOSE_PROJECT_NAME" {print substr($0,index($0,"=")+1); exit}' "$worktree/.env")"
+    [[ "$env_project" == "$compose_project" ]]
+}
+
+remove_worktree_path_safely() {
+    local runtime_dir_real
+    [[ "$worktree" == "$runtime_dir/$target" ]] || return 1
+    [[ "$target" =~ ^E[0-9]+-S[0-9]+-[a-z0-9]+(-[a-z0-9]+)*$ ]] || return 1
+    [[ ! -L "$worktree" ]] || return 1
+    runtime_dir_is_safe || return 1
+
+    if git -C "$project_root" worktree list --porcelain 2>/dev/null \
+        | awk -v wt="$worktree" '$1=="worktree" && $2==wt {found=1} END {exit(found?0:1)}'; then
+        git -C "$project_root" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+    fi
+    [[ ! -e "$worktree" ]] && return 0
+
+    runtime_dir_is_safe || return 1
+    runtime_dir_real="$(cd "$runtime_dir" 2>/dev/null && pwd -P || true)"
+    [[ "$runtime_dir_real" == "$runtime_dir" ]] || return 1
+    docker run --rm -v "$runtime_dir_real:/worktrees" alpine:3.20 \
+        sh -c 'rm -rf -- "/worktrees/$1"' sh "$target" >/dev/null 2>&1 || return 1
+    git -C "$project_root" worktree prune >/dev/null 2>&1 || true
+    [[ ! -e "$worktree" ]]
+}
+
+cleanup() {
+    local rc=$? rollback_failed=0 ports_tmp
+    trap - EXIT
+
+    if [[ $success -eq 0 ]]; then
+        # If adoption already cleaned the source, detect work created outside
+        # this transaction before any destructive rollback. In that conflict
+        # state the verified target is the only guaranteed copy of the adopted
+        # snapshot, so preserve both source and target and fail closed.
+        if [[ $source_mutation_started -eq 1 && $source_clean_state_recorded -eq 1 ]]; then
+            current_rollback_branch="$(git -C "$project_root" branch --show-current 2>/dev/null || true)"
+            current_rollback_fingerprint="$(working_fingerprint "$project_root" 2>/dev/null || true)"
+            if [[ "$current_rollback_branch" != "$base_branch" || -z "$current_rollback_fingerprint" || "$current_rollback_fingerprint" != "$source_clean_fingerprint" ]]; then
+                source_changed_after_clean=1
+                preserve_target_on_rollback=1
+                rollback_failed=1
+            fi
+        fi
+
+        # Compose identity is derived by the harness, never by inherited shell
+        # variables. If identity cannot be proven, preserve the target instead
+        # of risking a destructive down against another project.
+        if [[ $docker_may_exist -eq 1 ]]; then
+            if ! target_compose_identity_is_safe; then
+                preserve_target_on_rollback=1
+                rollback_failed=1
+                printf 'ADOPT_CLEANUP_INCOMPLETE\nREASON=COMPOSE_IDENTITY_UNSAFE\nDETAIL=refusing destructive Compose cleanup for %s\n' "$worktree" >&2
+            elif ! compose_run "$worktree" "$compose_project" down -v --remove-orphans >/dev/null 2>&1; then
+                preserve_target_on_rollback=1
+                rollback_failed=1
+                printf 'ADOPT_CLEANUP_INCOMPLETE\nREASON=COMPOSE_DOWN_FAILED\nDETAIL=preserving %s for manual inspection\n' "$worktree" >&2
+            fi
+        fi
+
+        # Port registration is mutated only while fd 9 owns .ports.lock.
+        if [[ $port_registered -eq 1 ]]; then
+            if [[ $lock_held -eq 1 ]]; then
+                port_entry_remove_locked || rollback_failed=1
+            else
+                exec 9>"$lock_file"
+                if flock -x 9; then
+                    lock_held=1
+                    port_entry_remove_locked || rollback_failed=1
+                else
+                    rollback_failed=1
+                fi
+            fi
+        fi
+        port_allocated=0
+
+        # Inspect actual Git state only when THIS process crossed the
+        # worktree-mutation boundary. A competing init/adopt may have created
+        # the same target while this process waited on .ports.lock; such a
+        # resource is foreign and must never be removed by this cleanup.
+        if [[ $worktree_mutation_started -eq 1 && $preserve_target_on_rollback -eq 0 ]]; then
+            remove_worktree_path_safely || rollback_failed=1
+            git -C "$project_root" worktree prune >/dev/null 2>&1 || true
+            [[ ! -e "$worktree" ]] && worktree_created=0
+        fi
+
+        # Case A owns the canonical branch only after this process crossed its
+        # own mutation boundary. Preserve it whenever source changed after
+        # cleanup because target + branch are then the recovery copy.
+        if [[ $preserve_target_on_rollback -eq 0 && $branch_created_by_adopt -eq 1 ]] \
+            && git -C "$project_root" show-ref --verify --quiet "refs/heads/$branch"; then
+            git -C "$project_root" branch -D "$branch" >/dev/null 2>&1 || rollback_failed=1
+        fi
+
+        # Once source cleanup was allowed to start, any ordinary failure must
+        # restore the captured source fingerprint. If new external work exists
+        # after cleanup, do NOT overwrite it; preserve the target and fail
+        # closed so both copies remain recoverable.
+        if [[ $source_mutation_started -eq 1 && $preserve_target_on_rollback -eq 0 ]]; then
+            restore_source_snapshot || rollback_failed=1
+        elif [[ $source_mutation_started -eq 0 && $source_detached -eq 1 && "$source_branch" == "$branch" ]]; then
+            git -C "$project_root" switch "$branch" >/dev/null 2>&1 || rollback_failed=1
+        fi
+
+        if [[ $lock_held -eq 1 ]]; then
+            flock -u 9 >/dev/null 2>&1 || true
+            exec 9>&-
+            lock_held=0
+        fi
+        if [[ $ports_file_created_by_adopt -eq 1 && -f "$ports_file" && ! -s "$ports_file" ]]; then
+            rm -f -- "$ports_file" || rollback_failed=1
+        fi
+        if [[ $lock_file_created_by_adopt -eq 1 && -e "$lock_file" ]]; then
+            rm -f -- "$lock_file" || rollback_failed=1
+        fi
+        if [[ $runtime_dir_created_by_adopt -eq 1 && -d "$runtime_dir" ]]; then
+            rmdir -- "$runtime_dir" 2>/dev/null || true
+        fi
+    fi
+
+    if [[ $tmp_created -eq 1 ]]; then
+        rm -rf -- "$tmp_dir" || true
+    fi
+
+    if [[ $rollback_failed -ne 0 ]]; then
+        printf 'ADOPT_ROLLBACK_FAILED\n' >&2
+        if [[ $source_changed_after_clean -eq 1 ]]; then
+            printf 'REASON=SOURCE_CHANGED_AFTER_CLEAN\n' >&2
+            printf 'DETAIL=source gained new work after adoption cleaned it; source and verified target were preserved, inspect %s and %s before continuing\n' "$project_root" "$worktree" >&2
+        else
+            printf 'REASON=ROLLBACK_INCOMPLETE\n' >&2
+            printf 'DETAIL=unable to restore exact pre-adoption state; inspect %s before continuing\n' "$project_root" >&2
+        fi
+        exit 70
+    fi
+    exit "$rc"
+}
+trap cleanup EXIT
+
+# ------------------------------------------
+# Phase B: capture exact pre-adoption source
+# ------------------------------------------
+git -C "$project_root" diff --binary --full-index HEAD -- > "$tracked_patch" \
+    || blocked "TRACKED_CAPTURE_FAILED" "unable to capture tracked binary diff"
+git -C "$project_root" diff --name-only -z HEAD -- > "$tracked_paths" \
+    || blocked "TRACKED_CAPTURE_FAILED" "unable to inventory tracked dirty paths"
+git -C "$project_root" ls-files --others --exclude-standard -z --exclude='.local-wt/' > "$untracked_paths" \
+    || blocked "UNTRACKED_CAPTURE_FAILED" "unable to inventory untracked paths"
+
+if [[ -s "$untracked_paths" ]]; then
+    (cd "$project_root" && tar --null -T "$untracked_paths" -cf "$untracked_archive") \
+        || blocked "UNTRACKED_CAPTURE_FAILED" "unable to archive untracked paths"
+else
+    tar -cf "$untracked_archive" --files-from /dev/null \
+        || blocked "UNTRACKED_CAPTURE_FAILED" "unable to create empty untracked archive"
+fi
+
+source_fingerprint="$(working_fingerprint "$project_root")" || blocked "SOURCE_FINGERPRINT_FAILED" "$target"
+
+# --------------------------------------
+# Phase C: allocate developer HTTP port
+# --------------------------------------
+# Phase A is intentionally repository-read-only. Runtime bookkeeping is
+# materialized only after every precondition passed and is rolled back if this
+# adoption does not reach ADOPT_COMPLETE.
+if [[ ! -d "$runtime_dir" ]]; then
+    [[ ! -L "$runtime_dir" ]] || blocked "RUNTIME_DIR_UNSAFE" "$runtime_dir must not be a symlink"
+    mkdir -p "$runtime_dir" || blocked "RUNTIME_DIR_CREATE_FAILED" "$runtime_dir"
+    runtime_dir_created_by_adopt=1
+fi
+runtime_dir_is_safe || blocked "RUNTIME_DIR_UNSAFE" "$runtime_dir must resolve directly under the project root"
+if [[ ! -e "$ports_file" ]]; then
+    : > "$ports_file" || blocked "PORT_REGISTRY_CREATE_FAILED" "$ports_file"
+    ports_file_created_by_adopt=1
+fi
+if [[ ! -e "$lock_file" ]]; then
+    : > "$lock_file" || blocked "PORT_LOCK_CREATE_FAILED" "$lock_file"
+    lock_file_created_by_adopt=1
+fi
+[[ -f "$ports_file" ]] || blocked "PORT_REGISTRY_INVALID" "$ports_file"
+[[ -f "$lock_file" ]] || blocked "PORT_LOCK_INVALID" "$lock_file"
+
+exec 9>"$lock_file"
+flock -x 9 || blocked "PORT_LOCK_FAILED" "$lock_file"
+lock_held=1
+
+# The same .ports.lock serializes init and adopt topology mutations. All
+# preconditions that can become stale while waiting are revalidated under the
+# lock before this process is allowed to own a branch/worktree mutation.
+[[ ! -e "$worktree" ]] \
+    || blocked "ADOPTION_STATE_CHANGED" "target worktree appeared while waiting for topology lock: $worktree"
+if git -C "$project_root" worktree list --porcelain | awk -v wt="$worktree" '$1=="worktree" && $2==wt {found=1} END {exit(found?0:1)}'; then
+    blocked "ADOPTION_STATE_CHANGED" "target worktree was assigned while waiting for topology lock: $worktree"
+fi
+locked_branch="$(git -C "$project_root" branch --show-current 2>/dev/null || true)"
+locked_head="$(git -C "$project_root" rev-parse HEAD 2>/dev/null || true)"
+[[ "$locked_branch" == "$source_branch" && "$locked_head" == "$source_head" ]] \
+    || blocked "ADOPTION_STATE_CHANGED" "source branch/HEAD changed while waiting for topology lock"
+if ! git -C "$project_root" diff --cached --quiet --; then
+    blocked "ADOPTION_STATE_CHANGED" "index changed while waiting for topology lock"
+fi
+if [[ $case_a -eq 1 ]]; then
+    ! git -C "$project_root" show-ref --verify --quiet "refs/heads/$branch" \
+        || blocked "ADOPTION_STATE_CHANGED" "canonical branch appeared while waiting for topology lock: $branch"
+else
+    git -C "$project_root" show-ref --verify --quiet "refs/heads/$branch" \
+        || blocked "ADOPTION_STATE_CHANGED" "canonical branch disappeared while waiting for topology lock: $branch"
+    locked_branch_worktree="$(git -C "$project_root" worktree list --porcelain | awk -v ref="refs/heads/$branch" '
+        $1=="worktree" {wt=$2}
+        $1=="branch" && $2==ref {print wt; exit}
+    ')"
+    [[ "$locked_branch_worktree" == "$project_root" ]] \
+        || blocked "ADOPTION_STATE_CHANGED" "canonical branch ownership changed while waiting for topology lock"
+fi
+locked_source_fingerprint="$(working_fingerprint "$project_root")" \
+    || blocked "SOURCE_FINGERPRINT_FAILED" "unable to re-read source under topology lock"
+[[ "$locked_source_fingerprint" == "$source_fingerprint" ]] \
+    || blocked "ADOPTION_STATE_CHANGED" "source working state changed while waiting for topology lock"
+set +e
+git -C "$project_root" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1
+locked_remote_rc=$?
+set -e
+if [[ $locked_remote_rc -eq 0 ]]; then
+    blocked "REMOTE_BRANCH_ALREADY_EXISTS" "origin/$branch appeared while waiting for topology lock"
+elif [[ $locked_remote_rc -ne 2 ]]; then
+    blocked "REMOTE_BRANCH_CHECK_FAILED" "$branch"
+fi
+
+port_is_registered() {
+    local candidate="$1"
+    awk -F '\t' -v p="$candidate" '$1==p {found=1} END {exit(found?0:1)}' "$ports_file"
+}
+port_is_listening() {
+    local candidate="$1"
+    ss -H -ltn "sport = :$candidate" 2>/dev/null | grep -q .
+}
+
+range_end=$((KIRO_PORT_RANGE_START + KIRO_PORT_RANGE_SIZE - 1))
+for ((candidate=KIRO_PORT_RANGE_START; candidate<=range_end; candidate++)); do
+    if ! port_is_registered "$candidate" && ! port_is_listening "$candidate"; then
+        assigned_port="$candidate"
+        port_allocated=1
+        break
+    fi
+done
+[[ $port_allocated -eq 1 ]] || blocked "PORT_RANGE_EXHAUSTED" "$KIRO_PORT_RANGE_START-$range_end"
+
+# ----------------------------------
+# Phase D: create/move target worktree
+# ----------------------------------
+if [[ "$source_branch" == "$branch" ]]; then
+    git -C "$project_root" switch --detach "$source_head" >/dev/null \
+        || blocked "SOURCE_DETACH_FAILED" "$branch"
+    source_detached=1
+fi
+
+printf 'Creating adoption worktree %s...\n' "$worktree" >&2
+worktree_mutation_started=1
+if [[ $case_a -eq 1 ]]; then
+    # The branch did not exist at preflight, so adoption owns it even if Git
+    # creates it and subsequently returns failure from worktree add.
+    branch_created_by_adopt=1
+    git -C "$project_root" worktree add "$worktree" -b "$branch" "$source_head" >/dev/null \
+        || blocked "WORKTREE_CREATE_FAILED" "$worktree"
+else
+    git -C "$project_root" worktree add "$worktree" "$branch" >/dev/null \
+        || blocked "WORKTREE_CREATE_FAILED" "$worktree"
+fi
+worktree_created=1
+
+if [[ -s "$tracked_patch" ]]; then
+    (cd "$worktree" && git apply --binary --whitespace=nowarn "$tracked_patch") \
+        || blocked "WORKTREE_TRANSFER_APPLY_FAILED" "tracked changes"
+fi
+if [[ -s "$untracked_paths" ]]; then
+    (cd "$worktree" && tar -xf "$untracked_archive") \
+        || blocked "WORKTREE_TRANSFER_APPLY_FAILED" "untracked files"
+fi
+
+target_fingerprint="$(working_fingerprint "$worktree")" || blocked "TARGET_FINGERPRINT_FAILED" "$target"
+[[ "$target_fingerprint" == "$source_fingerprint" ]] \
+    || blocked "WORKTREE_TRANSFER_MISMATCH" "source=$source_fingerprint target=$target_fingerprint"
+
+# Test-only hook that simulates an editor/second shell changing the source
+# after capture. The change is deliberately NOT rolled back because it models
+# work created outside adoption and must be preserved.
+if [[ "${KIRO_ADOPT_TEST_MUTATE_SOURCE_AFTER_TARGET_VERIFY:-0}" == "1" ]]; then
+    printf '\n# concurrent source mutation fixture\n' >> "$spec_dir/tasks.md"
+fi
+current_source_fingerprint="$(working_fingerprint "$project_root")" \
+    || blocked "SOURCE_FINGERPRINT_FAILED" "unable to re-read source before cleanup"
+[[ "$current_source_fingerprint" == "$source_fingerprint" ]] \
+    || blocked "SOURCE_CHANGED_DURING_ADOPTION" "captured=$source_fingerprint current=$current_source_fingerprint"
+
+# Deterministic pre-source-mutation fault injection used only by the harness
+# tests to prove that a verified target can still be rolled back while source
+# remains byte-identical.
+if [[ "${KIRO_ADOPT_TEST_FAIL_AFTER_TARGET_VERIFY:-0}" == "1" ]]; then
+    blocked "TEST_FAIL_AFTER_TARGET_VERIFY" "fault injection after target verification"
+fi
+
+# ---------------------------------------------
+# Phase E: selectively clean the source checkout
+# ---------------------------------------------
+# This flag is set BEFORE the first command allowed to mutate source. From now
+# on every failure must restore the captured fingerprint, including failures
+# that occur midway through selective cleanup.
+source_mutation_started=1
+source_mutation_observed=0
+fault_during_clean_emitted=0
+
+if [[ -s "$tracked_paths" ]]; then
+    git -C "$project_root" restore --source="$source_head" --worktree \
+        --pathspec-from-file="$tracked_paths" --pathspec-file-nul \
+        || blocked "SOURCE_CLEAN_FAILED" "tracked paths"
+    source_mutation_observed=1
+fi
+
+if [[ -s "$untracked_paths" ]]; then
+    while IFS= read -r -d '' path; do
+        rm -f -- "$project_root/$path" || blocked "SOURCE_CLEAN_FAILED" "$path"
+        source_mutation_observed=1
+        parent="$(dirname -- "$project_root/$path")"
+        while [[ "$parent" != "$project_root" && "$parent" == "$project_root"/* ]]; do
+            rmdir -- "$parent" 2>/dev/null || break
+            parent="$(dirname -- "$parent")"
+        done
+        # With untracked input, fail after the first untracked deletion so the
+        # rollback test exercises a genuinely partially-cleaned source: tracked
+        # paths are normalized and one untracked path is already gone.
+        if [[ "${KIRO_ADOPT_TEST_FAIL_DURING_SOURCE_CLEAN:-0}" == "1" && $fault_during_clean_emitted -eq 0 ]]; then
+            fault_during_clean_emitted=1
+            blocked "TEST_FAIL_DURING_SOURCE_CLEAN" "fault injection after partial source cleanup mutation"
+        fi
+    done < "$untracked_paths"
+fi
+
+# If there were tracked mutations but no untracked paths, fail after the tracked
+# normalization. A completely clean spec still gets a deterministic boundary
+# failure so cleanup topology can be exercised without inventing mutations.
+if [[ "${KIRO_ADOPT_TEST_FAIL_DURING_SOURCE_CLEAN:-0}" == "1" && $fault_during_clean_emitted -eq 0 ]]; then
+    if [[ $source_mutation_observed -eq 1 ]]; then
+        blocked "TEST_FAIL_DURING_SOURCE_CLEAN" "fault injection after tracked source cleanup mutation"
+    fi
+    blocked "TEST_FAIL_DURING_SOURCE_CLEAN" "fault injection at source cleanup boundary"
+fi
+
+[[ -z "$(git -C "$project_root" status --porcelain=v1)" ]] \
+    || blocked "SOURCE_CLEAN_FAILED" "source checkout remains dirty after selective cleanup"
+
+if [[ "$source_branch" == "$branch" ]]; then
+    git -C "$project_root" switch "$base_branch" >/dev/null \
+        || blocked "SOURCE_BASE_SWITCH_FAILED" "$base_branch"
+fi
+[[ "$(git -C "$project_root" branch --show-current)" == "$base_branch" ]] \
+    || blocked "SOURCE_BASE_SWITCH_FAILED" "$base_branch"
+source_clean_fingerprint="$(working_fingerprint "$project_root")" \
+    || blocked "SOURCE_FINGERPRINT_FAILED" "unable to record clean source rollback boundary"
+source_clean_state_recorded=1
+
+# Test-only hook: model new developer work created after adoption already
+# cleaned the source. A later runtime failure must preserve this new work and
+# the verified target instead of overwriting either copy during rollback.
+if [[ "${KIRO_ADOPT_TEST_MUTATE_SOURCE_AFTER_CLEAN:-0}" == "1" ]]; then
+    printf '\n# concurrent source mutation after clean fixture\n' >> "$project_root/docker-compose.yml"
+fi
+
+# ----------------------------------------------
+# Phase F: reproduce init runtime isolation topology
+# ----------------------------------------------
+cp "$project_root/.env" "$worktree/.env" || blocked "RUNTIME_CONFIG_COPY_FAILED" ".env"
+if [[ -f "$project_root/docker-compose.override.yml" ]]; then
+    cp "$project_root/docker-compose.override.yml" "$worktree/docker-compose.override.yml" \
+        || blocked "RUNTIME_CONFIG_COPY_FAILED" "docker-compose.override.yml"
+else
+    rm -f -- "$worktree/docker-compose.override.yml" \
+        || blocked "RUNTIME_CONFIG_COPY_FAILED" "remove stale docker-compose.override.yml"
+fi
+
+upsert_env() {
+    local file="$1" key="$2" value="$3" tmp
+    tmp="$(mktemp "$tmp_dir/env.XXXXXX")"
+    awk -F= -v k="$key" -v v="$value" '
+        BEGIN {done=0}
+        $1==k {if(!done){print k "=" v; done=1}; next}
+        {print}
+        END {if(!done) print k "=" v}
+    ' "$file" > "$tmp"
+    mv "$tmp" "$file"
+}
+upsert_env "$worktree/.env" COMPOSE_PROJECT_NAME "$compose_project" \
+    || blocked "RUNTIME_CONFIG_WRITE_FAILED" "COMPOSE_PROJECT_NAME"
+upsert_env "$worktree/.env" APP_HTTP_PORT "$assigned_port" \
+    || blocked "RUNTIME_CONFIG_WRITE_FAILED" "APP_HTTP_PORT"
+
+compose_run "$worktree" "$compose_project" config >/dev/null \
+    || blocked "COMPOSE_CONFIG_INVALID" "$worktree"
+
+printf 'Preparing base database...\n' >&2
+compose_run "$project_root" "$expected_base_compose" up -d db >/dev/null \
+    || blocked "BASE_DB_START_FAILED" "$expected_base_compose"
+for _ in {1..30}; do
+    if compose_run "$project_root" "$expected_base_compose" exec -T db sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+compose_run "$project_root" "$expected_base_compose" exec -T db sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1 \
+    || blocked "BASE_DB_NOT_READY" "$expected_base_compose"
+
+printf 'Creating isolated database...\n' >&2
+# From this point the target Compose project MAY own resources even if `up`
+# returns non-zero; cleanup therefore always attempts `down -v`.
+docker_may_exist=1
+compose_run "$worktree" "$compose_project" up -d db >/dev/null \
+    || blocked "WORKTREE_DB_START_FAILED" "$compose_project"
+for _ in {1..30}; do
+    if compose_run "$worktree" "$compose_project" exec -T db sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+compose_run "$worktree" "$compose_project" exec -T db sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1 \
+    || blocked "WORKTREE_DB_NOT_READY" "$compose_project"
+
+compose_run "$project_root" "$expected_base_compose" exec -T db sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner --no-privileges' > "$dump_file" \
+    || blocked "BASE_DB_DUMP_FAILED" "$expected_base_compose"
+compose_run "$worktree" "$compose_project" exec -T db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "$dump_file" >/dev/null \
+    || blocked "WORKTREE_DB_RESTORE_FAILED" "$compose_project"
+
+printf 'Starting isolated stack...\n' >&2
+# IMAGE FRESHNESS: the final start MUST re-evaluate the current worktree
+# Dockerfile/build context before running the built services. A plain `up -d`
+# silently reuses any pre-existing image cached under this Compose project/tag,
+# even when it was built from an older Dockerfile (e.g. before the development
+# ACL entrypoint existed). That stale image runs the OLD root entrypoint and
+# makes the two-phase bootstrap preflight fail with BOOTSTRAP_PERMS_FAILED.
+# `--build` forces Compose to evaluate the current Dockerfile; Docker's layer
+# cache still applies, so this is fresh without being a `--no-cache` rebuild.
+compose_run "$worktree" "$compose_project" up -d --build >/dev/null \
+    || blocked "WORKTREE_STACK_START_FAILED" "$compose_project"
+project_ps="$(compose_run "$worktree" "$compose_project" ps -q 2>/dev/null || true)"
+[[ -n "$project_ps" ]] || blocked "COMPOSE_PROJECT_VERIFY_FAILED" "$compose_project"
+
+# Persist allocation only after the isolated runtime is verified. fd 9 still
+# owns .ports.lock, so allocation and release are serialized by the same lock.
+printf '%s\t%s\t%s\n' "$assigned_port" "$target" "$worktree" >> "$ports_file" \
+    || blocked "PORT_REGISTRATION_FAILED" "$ports_file"
+port_registered=1
+
+bootstrap_php_dependencies
+
+# -----------------------------------------------
+# Phase G: commit adoption result
+# -----------------------------------------------
+success=1
+printf 'ADOPT_COMPLETE\n' >&2
+printf 'Target: %s\n' "$target" >&2
+printf 'Source branch before adoption: %s\n' "$source_branch" >&2
+printf 'Source branch after adoption: %s\n' "$base_branch" >&2
+printf 'Branch: %s\n' "$branch" >&2
+printf 'Compose project: %s\n' "$compose_project" >&2
+printf 'HTTP port: %s\n' "$assigned_port" >&2
+printf 'Worktree: %s\n' "$worktree" >&2
+printf '%s\n' "$worktree"
+
+
+-------------------------------
+== .kiro/scripts/worktree-init.sh ==
+-------------------------------
+#!/usr/bin/env bash
+set -euo pipefail
+
+blocked() {
+    printf 'INIT_BLOCKED\n' >&2
+    printf 'Code: %s\n' "$1" >&2
+    printf 'Detail: %s\n' "$2" >&2
+    exit 1
+}
+
+[[ $# -eq 1 ]] || blocked "INVALID_ARGUMENT_COUNT" "usage: bash .kiro/scripts/worktree-init.sh <ID>-<slug>"
+target="$1"
+[[ "$target" =~ ^E[0-9]+-S[0-9]+-[a-z0-9]+(-[a-z0-9]+)*$ ]] || blocked "INVALID_SPEC_TARGET" "target must match E<number>-S<number>-<kebab-slug>"
+
+config="$HOME/.config/kiro/developer.env"
+[[ -f "$config" ]] || blocked "DEVELOPER_CONFIG_MISSING" "$config"
+# shellcheck disable=SC1090
+source "$config"
+
+[[ -n "${KIRO_DEVELOPER:-}" ]] || blocked "DEVELOPER_CONFIG_INVALID" "KIRO_DEVELOPER is required in $config"
+[[ -n "${KIRO_PROJECT_ROOT:-}" ]] || blocked "DEVELOPER_CONFIG_INVALID" "KIRO_PROJECT_ROOT is required in $config"
+[[ -n "${KIRO_PORT_RANGE_START:-}" ]] || blocked "DEVELOPER_CONFIG_INVALID" "KIRO_PORT_RANGE_START is required in $config"
+KIRO_PORT_RANGE_SIZE="${KIRO_PORT_RANGE_SIZE:-20}"
+
+[[ "$KIRO_DEVELOPER" =~ ^[a-z0-9][a-z0-9-]*$ ]] || blocked "INVALID_DEVELOPER" "KIRO_DEVELOPER must be lowercase kebab-safe"
+[[ "$KIRO_PORT_RANGE_START" =~ ^[0-9]+$ ]] || blocked "INVALID_PORT_RANGE" "KIRO_PORT_RANGE_START must be numeric"
+[[ "$KIRO_PORT_RANGE_SIZE" =~ ^[1-9][0-9]*$ ]] || blocked "INVALID_PORT_RANGE" "KIRO_PORT_RANGE_SIZE must be a positive integer"
+command -v flock >/dev/null 2>&1 || blocked "FLOCK_UNAVAILABLE" "flock is required"
+command -v ss >/dev/null 2>&1 || blocked "SS_UNAVAILABLE" "ss from iproute2 is required"
+command -v docker >/dev/null 2>&1 || blocked "DOCKER_UNAVAILABLE" "docker is required"
+docker compose version >/dev/null 2>&1 || blocked "DOCKER_COMPOSE_UNAVAILABLE" "Docker Compose v2 is required"
+
+project_root="$(cd "$KIRO_PROJECT_ROOT" 2>/dev/null && pwd -P || true)"
+[[ -n "$project_root" ]] || blocked "PROJECT_ROOT_INVALID" "$KIRO_PROJECT_ROOT"
+resolved_root="$(git -C "$project_root" rev-parse --show-toplevel 2>/dev/null || true)"
+[[ "$resolved_root" == "$project_root" ]] || blocked "PROJECT_ROOT_INVALID" "KIRO_PROJECT_ROOT must be the main repository root"
+[[ -d "$project_root/.git" ]] || blocked "PROJECT_ROOT_NOT_MAIN_WORKTREE" "$project_root must be the main worktree"
+compose_runner="$project_root/.kiro/scripts/compose-project.sh"
+[[ -f "$compose_runner" ]] || blocked "COMPOSE_RUNNER_MISSING" "$compose_runner"
+for required in .kiro docker-compose.yml .env; do
+    [[ -e "$project_root/$required" ]] || blocked "BASE_FILE_MISSING" "$project_root/$required"
+done
+
+base_compose_name="$(awk -F= '$1=="COMPOSE_PROJECT_NAME" {print substr($0,index($0,"=")+1); exit}' "$project_root/.env")"
+expected_base_compose="zurich-$KIRO_DEVELOPER"
+[[ "$base_compose_name" == "$expected_base_compose" ]] || blocked "BASE_COMPOSE_PROJECT_MISMATCH" "expected COMPOSE_PROJECT_NAME=$expected_base_compose in base .env"
+
+target_lower="${target,,}"
+branch="spec/$target_lower"
+compose_project="zurich-$KIRO_DEVELOPER-$target_lower"
+runtime_dir="$project_root/.local-wt"
+
+runtime_dir_is_safe() {
+    local resolved
+    [[ "$runtime_dir" == "$project_root/.local-wt" ]] || return 1
+    [[ -d "$runtime_dir" ]] || return 1
+    [[ ! -L "$runtime_dir" ]] || return 1
+    resolved="$(cd "$runtime_dir" 2>/dev/null && pwd -P || true)"
+    [[ -n "$resolved" && "$resolved" == "$runtime_dir" ]]
+}
+
+[[ ! -L "$runtime_dir" ]] || blocked "RUNTIME_DIR_UNSAFE" "$runtime_dir must not be a symlink"
+mkdir -p "$runtime_dir" || blocked "RUNTIME_DIR_CREATE_FAILED" "$runtime_dir"
+runtime_dir_is_safe || blocked "RUNTIME_DIR_UNSAFE" "$runtime_dir must resolve directly under the project root"
+
+worktree="$runtime_dir/$target"
+ports_file="$runtime_dir/.ports.tsv"
+lock_file="$runtime_dir/.ports.lock"
+touch "$ports_file" "$lock_file"
+
+[[ ! -e "$worktree" ]] || blocked "WORKTREE_EXISTS" "$worktree"
+if git -C "$project_root" show-ref --verify --quiet "refs/heads/$branch"; then
+    blocked "LOCAL_BRANCH_EXISTS" "$branch"
+fi
+
+printf 'Updating origin/main...\n' >&2
+git -C "$project_root" fetch origin main >/dev/null 2>&1 || blocked "FETCH_FAILED" "unable to fetch origin/main"
+set +e
+git -C "$project_root" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1
+remote_rc=$?
+set -e
+if [[ $remote_rc -eq 0 ]]; then
+    blocked "REMOTE_BRANCH_EXISTS" "origin/$branch"
+elif [[ $remote_rc -ne 2 ]]; then
+    blocked "REMOTE_BRANCH_CHECK_FAILED" "$branch"
+fi
+
+exec 9>"$lock_file"
+flock -x 9
+
+# init and adopt share .ports.lock as the topology mutation lock. Revalidate
+# branch/worktree state after acquiring it so a concurrent adoption/initializer
+# that completed while this process was waiting cannot be mistaken for a
+# partial resource owned by this process.
+[[ ! -e "$worktree" ]] || blocked "WORKTREE_EXISTS" "$worktree appeared while waiting for topology lock"
+if git -C "$project_root" worktree list --porcelain | awk -v wt="$worktree" '$1=="worktree" && $2==wt {found=1} END {exit(found?0:1)}'; then
+    blocked "WORKTREE_EXISTS" "$worktree was assigned while waiting for topology lock"
+fi
+if git -C "$project_root" show-ref --verify --quiet "refs/heads/$branch"; then
+    blocked "LOCAL_BRANCH_EXISTS" "$branch appeared while waiting for topology lock"
+fi
+set +e
+git -C "$project_root" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1
+locked_remote_rc=$?
+set -e
+if [[ $locked_remote_rc -eq 0 ]]; then
+    blocked "REMOTE_BRANCH_EXISTS" "origin/$branch appeared while waiting for topology lock"
+elif [[ $locked_remote_rc -ne 2 ]]; then
+    blocked "REMOTE_BRANCH_CHECK_FAILED" "$branch"
+fi
+
+port_is_registered() {
+    local candidate="$1"
+    awk -F '\t' -v p="$candidate" '$1==p {found=1} END {exit(found?0:1)}' "$ports_file"
+}
+
+port_is_listening() {
+    local candidate="$1"
+    ss -H -ltn "sport = :$candidate" 2>/dev/null | grep -q .
+}
+
+assigned_port=""
+range_end=$((KIRO_PORT_RANGE_START + KIRO_PORT_RANGE_SIZE - 1))
+for ((candidate=KIRO_PORT_RANGE_START; candidate<=range_end; candidate++)); do
+    if ! port_is_registered "$candidate" && ! port_is_listening "$candidate"; then
+        assigned_port="$candidate"
+        break
+    fi
+done
+[[ -n "$assigned_port" ]] || blocked "PORT_RANGE_EXHAUSTED" "$KIRO_PORT_RANGE_START-$range_end"
+
+success=0
+worktree_mutation_started=0
+docker_may_exist=0
+dump_file="$(mktemp)"
+chmod 600 "$dump_file"
+compose_run() {
+    local directory="$1" project="$2"
+    shift 2
+    bash "$compose_runner" "$directory" "$project" "$@"
+}
+
+bootstrap_php_dependencies() {
+    local host_uid host_gid name norm_output norm_rc probe_output probe_rc
+    host_uid="$(id -u)"
+    host_gid="$(id -g)"
+    printf 'Installing PHP dependencies...\n' >&2
+    # Two-phase, FAIL-CLOSED permission preflight before composer. The container
+    # ENTRYPOINT is the single source of truth for the permission model
+    # (idempotent chmod + POSIX ACLs); no manual chmod competes with it.
+    #
+    # PHASE 1 — root normalization: boot the container as root with a trivial
+    # command so the real entrypoint applies/re-applies chmod+setfacl. If the
+    # entrypoint (chmod/setfacl) fails, this exits non-zero -> BOOTSTRAP_PERMS_FAILED.
+    #
+    # PHASE 2 — effective developer writability: run as the developer UID:GID
+    # (the exact identity composer will use), WITHOUT any chmod/setfacl, and
+    # actually create+delete a probe file inside storage/ and bootstrap/cache/.
+    # This proves the ACL contract grants the non-owner developer real write
+    # access (root-only phase 1 could otherwise mask a false positive). Failure
+    # here is BOOTSTRAP_PERMS_FAILED, never DEPENDENCY_INSTALL_FAILED.
+    #
+    # `set -e` is active; capture each phase without aborting so failures map to
+    # the correct block code with evidence.
+    set +e
+    norm_output="$(compose_run "$worktree" "$compose_project" \
+        run --rm -T --user 0:0 app true 2>&1)"
+    norm_rc=$?
+    set -e
+    [[ $norm_rc -eq 0 ]] \
+        || blocked "BOOTSTRAP_PERMS_FAILED" "root entrypoint normalization failed (rc=${norm_rc}): ${norm_output}"
+    set +e
+    probe_output="$(compose_run "$worktree" "$compose_project" \
+        run --rm -T --user "${host_uid}:${host_gid}" --entrypoint sh app \
+        -c 'for d in /var/www/html/storage /var/www/html/bootstrap/cache; do t="$d/.kiro-dev-perms-probe.$$"; ( : > "$t" ) 2>/dev/null || { echo "developer cannot write: $d" >&2; exit 32; }; rm -f "$t" 2>/dev/null || { echo "developer cannot remove: $d" >&2; exit 33; }; done; echo "developer-perms-ok"' 2>&1)"
+    probe_rc=$?
+    set -e
+    { [[ $probe_rc -eq 0 ]] && grep -q 'developer-perms-ok' <<< "$probe_output"; } \
+        || blocked "BOOTSTRAP_PERMS_FAILED" "developer UID:GID cannot write storage/bootstrap.cache after normalization (rc=${probe_rc}): ${probe_output}"
+    # Composer (and its post-autoload-dump `@php artisan package:discover --ansi`
+    # hook) writes progress to stdout. This is the ONLY compose_run in the
+    # lifecycle whose stdout would otherwise reach the script's stdout, which is
+    # the structured channel: on success stdout must contain ONLY the worktree
+    # path so `worktree="$(worktree-init.sh ...)"; cd "$worktree"` works. Redirect
+    # this command's stdout to stderr so the output stays visible to the user
+    # without contaminating the structured path line. `>&2` does not alter the
+    # command's exit status, so `|| blocked ...` still fail-closes on composer
+    # failure with DEPENDENCY_INSTALL_FAILED.
+    compose_run "$worktree" "$compose_project" \
+        run --rm -T --user "${host_uid}:${host_gid}" -e COMPOSER_HOME=/tmp/composer app \
+        composer install --no-interaction --prefer-dist --no-progress >&2 \
+        || blocked "DEPENDENCY_INSTALL_FAILED" "composer install failed for worktree dependency bootstrap"
+    [[ -f "$worktree/vendor/autoload.php" ]] || blocked "DEPENDENCY_READINESS_FAILED" "missing required artifact: vendor/autoload.php"
+    for name in pest pint deptrac; do
+        [[ -x "$worktree/vendor/bin/$name" ]] || blocked "DEPENDENCY_READINESS_FAILED" "missing or non-executable required artifact: vendor/bin/$name"
+    done
+    printf 'PHP dependencies ready\n' >&2
+}
+
+target_compose_identity_is_safe() {
+    local env_project
+    [[ "$compose_project" == "zurich-$KIRO_DEVELOPER-$target_lower" ]] || return 1
+    [[ "$compose_project" != "$expected_base_compose" ]] || return 1
+    [[ "$worktree" == "$runtime_dir/$target" ]] || return 1
+    [[ -f "$worktree/.env" ]] || return 1
+    env_project="$(awk -F= '$1=="COMPOSE_PROJECT_NAME" {print substr($0,index($0,"=")+1); exit}' "$worktree/.env")"
+    [[ "$env_project" == "$compose_project" ]]
+}
+
+remove_worktree_path_safely() {
+    local runtime_dir_real
+    [[ "$worktree" == "$runtime_dir/$target" ]] || return 1
+    [[ "$target" =~ ^E[0-9]+-S[0-9]+-[a-z0-9]+(-[a-z0-9]+)*$ ]] || return 1
+    [[ ! -L "$worktree" ]] || return 1
+    runtime_dir_is_safe || return 1
+
+    if git -C "$project_root" worktree list --porcelain 2>/dev/null \
+        | awk -v wt="$worktree" '$1=="worktree" && $2==wt {found=1} END {exit(found?0:1)}'; then
+        git -C "$project_root" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+    fi
+    [[ ! -e "$worktree" ]] && return 0
+
+    # Containers may create ignored files as www-data/root. Re-resolve the
+    # parent immediately before the privileged fallback and refuse to mount it
+    # if .local-wt was replaced by a symlink or escaped the project root.
+    runtime_dir_is_safe || return 1
+    runtime_dir_real="$(cd "$runtime_dir" 2>/dev/null && pwd -P || true)"
+    [[ "$runtime_dir_real" == "$runtime_dir" ]] || return 1
+    docker run --rm -v "$runtime_dir_real:/worktrees" alpine:3.20 \
+        sh -c 'rm -rf -- "/worktrees/$1"' sh "$target" >/dev/null 2>&1 || return 1
+    git -C "$project_root" worktree prune >/dev/null 2>&1 || true
+    [[ ! -e "$worktree" ]]
+}
+
+cleanup() {
+    rc=$?
+    cleanup_failed=0
+    preserve_target=0
+    rm -f "$dump_file"
+    if [[ $success -eq 0 ]]; then
+        if [[ $docker_may_exist -eq 1 ]]; then
+            if ! target_compose_identity_is_safe; then
+                cleanup_failed=1
+                preserve_target=1
+                printf 'INIT_CLEANUP_INCOMPLETE\nCode: COMPOSE_IDENTITY_UNSAFE\nDetail: refusing destructive Compose cleanup for %s\n' "$worktree" >&2
+            elif ! compose_run "$worktree" "$compose_project" down -v --remove-orphans >/dev/null 2>&1; then
+                cleanup_failed=1
+                preserve_target=1
+                printf 'INIT_CLEANUP_INCOMPLETE\nCode: COMPOSE_DOWN_FAILED\nDetail: preserving %s for manual inspection\n' "$worktree" >&2
+            fi
+        fi
+
+        # Only resources created after THIS process crossed its mutation
+        # boundary are eligible for cleanup. A concurrent init/adopt may have
+        # completed while this process waited on .ports.lock; those resources
+        # are foreign and must never be removed here.
+        if [[ $worktree_mutation_started -eq 1 && $preserve_target -eq 0 ]]; then
+            if ! remove_worktree_path_safely; then
+                cleanup_failed=1
+                printf 'INIT_CLEANUP_INCOMPLETE\nCode: WORKTREE_REMOVE_FAILED\nDetail: unable to remove %s safely\n' "$worktree" >&2
+            fi
+
+            if [[ ! -e "$worktree" ]] && git -C "$project_root" show-ref --verify --quiet "refs/heads/$branch"; then
+                git -C "$project_root" branch -D "$branch" >/dev/null 2>&1 || cleanup_failed=1
+            fi
+            git -C "$project_root" worktree prune >/dev/null 2>&1 || true
+        fi
+    fi
+    if [[ $cleanup_failed -ne 0 ]]; then
+        exit 70
+    fi
+    exit "$rc"
+}
+trap cleanup EXIT
+
+printf 'Creating worktree %s...\n' "$worktree" >&2
+worktree_mutation_started=1
+git -C "$project_root" worktree add "$worktree" -b "$branch" origin/main >/dev/null || blocked "WORKTREE_CREATE_FAILED" "$worktree"
+
+cp "$project_root/.env" "$worktree/.env"
+# The worktree is created intentionally from origin/main. init must NOT import
+# tracked working-tree modifications (e.g. an unpublished Dockerfile) from the
+# base checkout: doing so would make every new spec's worktree start with a
+# spurious `M Dockerfile`, contaminating changed-path classification, audit and
+# publication. The persistent development ACL model reaches worktrees through
+# origin/main once the Dockerfile fix is published; to exercise the fix before
+# publication, use the explicit `worktree-adopt` flow — init is never an
+# implicit partial adopt. Only untracked runtime config is materialized here.
+if [[ -f "$project_root/docker-compose.override.yml" ]]; then
+    cp "$project_root/docker-compose.override.yml" "$worktree/docker-compose.override.yml"
+else
+    rm -f -- "$worktree/docker-compose.override.yml"
+fi
+
+upsert_env() {
+    local file="$1" key="$2" value="$3" tmp
+    tmp="$(mktemp)"
+    awk -F= -v k="$key" -v v="$value" '
+        BEGIN {done=0}
+        $1==k {if(!done){print k "=" v; done=1}; next}
+        {print}
+        END {if(!done) print k "=" v}
+    ' "$file" > "$tmp"
+    mv "$tmp" "$file"
+}
+upsert_env "$worktree/.env" COMPOSE_PROJECT_NAME "$compose_project"
+upsert_env "$worktree/.env" APP_HTTP_PORT "$assigned_port"
+
+compose_run "$worktree" "$compose_project" config >/dev/null || blocked "COMPOSE_CONFIG_INVALID" "$worktree"
+
+printf 'Preparing base database...\n' >&2
+compose_run "$project_root" "$expected_base_compose" up -d db >/dev/null || blocked "BASE_DB_START_FAILED" "$expected_base_compose"
+for _ in {1..30}; do
+    if compose_run "$project_root" "$expected_base_compose" exec -T db sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+compose_run "$project_root" "$expected_base_compose" exec -T db sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1 || blocked "BASE_DB_NOT_READY" "$expected_base_compose"
+
+printf 'Creating isolated database...\n' >&2
+docker_may_exist=1
+compose_run "$worktree" "$compose_project" up -d db >/dev/null || blocked "WORKTREE_DB_START_FAILED" "$compose_project"
+for _ in {1..30}; do
+    if compose_run "$worktree" "$compose_project" exec -T db sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+compose_run "$worktree" "$compose_project" exec -T db sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1 || blocked "WORKTREE_DB_NOT_READY" "$compose_project"
+
+compose_run "$project_root" "$expected_base_compose" exec -T db sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner --no-privileges' > "$dump_file" || blocked "BASE_DB_DUMP_FAILED" "$expected_base_compose"
+compose_run "$worktree" "$compose_project" exec -T db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "$dump_file" >/dev/null || blocked "WORKTREE_DB_RESTORE_FAILED" "$compose_project"
+
+printf 'Starting isolated stack...\n' >&2
+# IMAGE FRESHNESS: the final start MUST re-evaluate the current worktree
+# Dockerfile/build context before running the built services. A plain `up -d`
+# silently reuses any pre-existing image cached under this Compose project/tag,
+# even when it was built from an older Dockerfile (e.g. before the development
+# ACL entrypoint existed). That stale image runs the OLD root entrypoint and
+# makes the two-phase bootstrap preflight fail with BOOTSTRAP_PERMS_FAILED.
+# `--build` forces Compose to evaluate the current Dockerfile; Docker's layer
+# cache still applies, so this is fresh without being a `--no-cache` rebuild.
+compose_run "$worktree" "$compose_project" up -d --build >/dev/null || blocked "WORKTREE_STACK_START_FAILED" "$compose_project"
+project_ps="$(compose_run "$worktree" "$compose_project" ps -q 2>/dev/null || true)"
+[[ -n "$project_ps" ]] || blocked "COMPOSE_PROJECT_VERIFY_FAILED" "$compose_project"
+
+bootstrap_php_dependencies
+
+printf '%s\t%s\t%s\n' "$assigned_port" "$target" "$worktree" >> "$ports_file"
+success=1
+
+printf 'INIT_COMPLETE\n' >&2
+printf 'Target: %s\n' "$target" >&2
+printf 'Branch: %s\n' "$branch" >&2
+printf 'Compose project: %s\n' "$compose_project" >&2
+printf 'HTTP port: %s\n' "$assigned_port" >&2
+printf 'Worktree: %s\n' "$worktree" >&2
+printf '%s\n' "$worktree"
+
+
+-------------------------------
+== .kiro/scripts/worktree-teardown.sh ==
+-------------------------------
+#!/usr/bin/env bash
+set -euo pipefail
+
+blocked() {
+    printf 'TEARDOWN_BLOCKED\n'
+    printf 'Code: %s\n' "$1"
+    printf 'Detail: %s\n' "$2"
+    exit 1
+}
+
+[[ $# -eq 1 ]] || blocked "INVALID_ARGUMENT_COUNT" "usage: bash .kiro/scripts/worktree-teardown.sh <ID>-<slug>"
+target="$1"
+[[ "$target" =~ ^E[0-9]+-S[0-9]+-[a-z0-9]+(-[a-z0-9]+)*$ ]] || blocked "INVALID_SPEC_TARGET" "$target"
+
+config="$HOME/.config/kiro/developer.env"
+[[ -f "$config" ]] || blocked "DEVELOPER_CONFIG_MISSING" "$config"
+# shellcheck disable=SC1090
+source "$config"
+[[ -n "${KIRO_DEVELOPER:-}" ]] || blocked "DEVELOPER_CONFIG_INVALID" "KIRO_DEVELOPER is required in $config"
+[[ -n "${KIRO_PROJECT_ROOT:-}" ]] || blocked "DEVELOPER_CONFIG_INVALID" "KIRO_PROJECT_ROOT is required in $config"
+[[ "$KIRO_DEVELOPER" =~ ^[a-z0-9][a-z0-9-]*$ ]] || blocked "INVALID_DEVELOPER" "KIRO_DEVELOPER must be lowercase kebab-safe"
+command -v flock >/dev/null 2>&1 || blocked "FLOCK_UNAVAILABLE" "flock is required"
+command -v docker >/dev/null 2>&1 || blocked "DOCKER_UNAVAILABLE" "docker is required"
+docker compose version >/dev/null 2>&1 || blocked "DOCKER_COMPOSE_UNAVAILABLE" "Docker Compose v2 is required"
+
+project_root="$(cd "$KIRO_PROJECT_ROOT" 2>/dev/null && pwd -P || true)"
+[[ -n "$project_root" ]] || blocked "PROJECT_ROOT_INVALID" "$KIRO_PROJECT_ROOT"
+[[ "$(git -C "$project_root" rev-parse --show-toplevel 2>/dev/null || true)" == "$project_root" ]] || blocked "PROJECT_ROOT_INVALID" "$project_root"
+compose_runner="$project_root/.kiro/scripts/compose-project.sh"
+[[ -f "$compose_runner" ]] || blocked "COMPOSE_RUNNER_MISSING" "$compose_runner"
+[[ -f "$project_root/.env" ]] || blocked "BASE_FILE_MISSING" "$project_root/.env"
+[[ -f "$project_root/docker-compose.yml" ]] || blocked "BASE_FILE_MISSING" "$project_root/docker-compose.yml"
+
+target_lower="${target,,}"
+branch="spec/$target_lower"
+worktree="$project_root/.local-wt/$target"
+runtime_dir="$project_root/.local-wt"
+ports_file="$runtime_dir/.ports.tsv"
+lock_file="$runtime_dir/.ports.lock"
+compose_project="zurich-$KIRO_DEVELOPER-$target_lower"
+expected_base_compose="zurich-$KIRO_DEVELOPER"
+
+runtime_dir_is_safe() {
+    local resolved
+    [[ "$runtime_dir" == "$project_root/.local-wt" ]] || return 1
+    [[ -d "$runtime_dir" ]] || return 1
+    [[ ! -L "$runtime_dir" ]] || return 1
+    resolved="$(cd "$runtime_dir" 2>/dev/null && pwd -P || true)"
+    [[ -n "$resolved" && "$resolved" == "$runtime_dir" ]]
+}
+
+runtime_dir_is_safe || blocked "RUNTIME_DIR_UNSAFE" "$runtime_dir must be a physical directory directly under the project root"
+[[ "$compose_project" != "$expected_base_compose" ]] || blocked "COMPOSE_IDENTITY_UNSAFE" "target Compose project resolved to base project"
+[[ "$worktree" == "$runtime_dir/$target" ]] || blocked "WORKTREE_PATH_UNSAFE" "$worktree"
+[[ -d "$worktree" ]] || blocked "WORKTREE_NOT_FOUND" "$worktree"
+[[ ! -L "$worktree" ]] || blocked "WORKTREE_PATH_UNSAFE" "$worktree must not be a symlink"
+[[ -f "$worktree/.env" ]] || blocked "WORKTREE_ENV_MISSING" "$worktree/.env"
+[[ -f "$worktree/docker-compose.yml" ]] || blocked "WORKTREE_COMPOSE_MISSING" "$worktree/docker-compose.yml"
+worktree_compose_name="$(awk -F= '$1=="COMPOSE_PROJECT_NAME" {print substr($0,index($0,"=")+1); exit}' "$worktree/.env")"
+[[ "$worktree_compose_name" == "$compose_project" ]] || blocked "COMPOSE_PROJECT_MISMATCH" "expected COMPOSE_PROJECT_NAME=$compose_project in worktree .env"
+[[ "$(git -C "$worktree" branch --show-current 2>/dev/null || true)" == "$branch" ]] || blocked "BRANCH_MISMATCH" "$branch"
+[[ -z "$(git -C "$worktree" status --porcelain=v1)" ]] || blocked "WORKTREE_DIRTY" "$worktree"
+
+git -C "$project_root" fetch origin main >/dev/null 2>&1 || blocked "FETCH_FAILED" "origin/main"
+branch_head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+[[ "$branch_head" =~ ^[0-9a-f]{40}$ ]] || blocked "BRANCH_HEAD_INVALID" "$branch"
+git -C "$project_root" merge-base --is-ancestor "$branch_head" origin/main >/dev/null 2>&1 || blocked "BRANCH_NOT_MERGED" "$branch"
+
+compose_run() {
+    local directory="$1" project="$2"
+    shift 2
+    bash "$compose_runner" "$directory" "$project" "$@"
+}
+
+remove_worktree_path_safely() {
+    local runtime_dir_real
+    [[ "$worktree" == "$runtime_dir/$target" ]] || return 1
+    [[ ! -L "$worktree" ]] || return 1
+    runtime_dir_is_safe || return 1
+
+    git -C "$project_root" worktree remove "$worktree" >/dev/null 2>&1 || true
+    [[ ! -e "$worktree" ]] && return 0
+
+    # Fallback for ignored files written by containers as www-data/root. The
+    # parent is revalidated immediately before Docker receives a bind mount.
+    runtime_dir_is_safe || return 1
+    runtime_dir_real="$(cd "$runtime_dir" 2>/dev/null && pwd -P || true)"
+    [[ "$runtime_dir_real" == "$runtime_dir" ]] || return 1
+    docker run --rm -v "$runtime_dir_real:/worktrees" alpine:3.20 \
+        sh -c 'rm -rf -- "/worktrees/$1"' sh "$target" >/dev/null 2>&1 || return 1
+    git -C "$project_root" worktree prune >/dev/null 2>&1 || true
+    [[ ! -e "$worktree" ]]
+}
+
+# Destructive Compose cleanup is bound to the harness-computed target project;
+# inherited COMPOSE_PROJECT_NAME/APP_HTTP_PORT/.env variables cannot retarget it.
+compose_run "$worktree" "$compose_project" down -v --remove-orphans >/dev/null \
+    || blocked "COMPOSE_DOWN_FAILED" "$compose_project"
+remove_worktree_path_safely || blocked "WORKTREE_REMOVE_FAILED" "$worktree"
+git -C "$project_root" worktree prune >/dev/null 2>&1 || true
+git -C "$project_root" branch -d "$branch" >/dev/null || blocked "LOCAL_BRANCH_DELETE_FAILED" "$branch"
+
+mkdir -p "$runtime_dir"
+touch "$ports_file" "$lock_file"
+exec 9>"$lock_file"
+flock -x 9
+tmp="$(mktemp)"
+awk -F '\t' -v t="$target" -v w="$worktree" '!(($2==t)||($3==w))' "$ports_file" > "$tmp"
+mv "$tmp" "$ports_file"
+
+printf 'TEARDOWN_COMPLETE\n'
+printf 'Target: %s\n' "$target"
+printf 'Branch: %s\n' "$branch"
+printf 'Compose project removed: %s\n' "$compose_project"
+printf 'Worktree removed: %s\n' "$worktree"
+
+

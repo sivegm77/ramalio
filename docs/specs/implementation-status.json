@@ -1,0 +1,316 @@
+{
+  "version": 1,
+  "specs": {
+    "E1-S0-descubrimiento-proyecto-y-carga-toml": {
+      "status": "merged",
+      "branch": "feat/e1-s0-project-discovery-toml-loader",
+      "commit": "412cb1b",
+      "pr": 2,
+      "merged_at": "pre-tracker"
+    },
+    "E1-S1-validacion-target": {
+      "status": "merged",
+      "branch": "e1-s1-target-validation",
+      "commit": "0e22d77",
+      "pr": 4,
+      "merged_at": "pre-tracker"
+    },
+    "E1-S2-normalizacion-target-y-naming-derivado": {
+      "status": "merged",
+      "branch": "feat/e1-s2-normalizacion-target-naming",
+      "commit": "3ce78f7",
+      "pr": 5,
+      "merged_at": "pre-tracker"
+    },
+    "E2-S0-modelo-git-worktree-base": {
+      "status": "merged",
+      "branch": "e2-s0-modelo-git-worktree-base",
+      "commit": "7d5b906",
+      "pr": 6,
+      "merged_at": "pre-tracker"
+    },
+    "E2-S1-init-workspace": {
+      "status": "merged",
+      "branch": "e2-s1-init-workspace",
+      "commit": "4efdfef",
+      "pr": 7,
+      "merged_at": "pre-tracker"
+    },
+    "E2-S2-adopt-workspace": {
+      "status": "merged",
+      "branch": "e2-s2-adopt-workspace",
+      "commit": "9ceb11e",
+      "pr": 9,
+      "merged_at": "2026-09-04"
+    },
+    "E2-S3-destroy-workspace": {
+      "status": "merged",
+      "branch": "e2-s3-destroy-workspace",
+      "commit": "c53ecfc",
+      "pr": 10,
+      "merged_at": "2026-09-04"
+    },
+    "E3-S0-list-workspaces": {
+      "status": "merged",
+      "branch": "e3-s0-list-workspaces",
+      "commit": "ed1243b",
+      "pr": 11,
+      "merged_at": "2026-09-04"
+    },
+    "E3-S1-status-workspace": {
+      "status": "merged",
+      "branch": "e3-s1-status-workspace",
+      "commit": "05ccca8",
+      "pr": 12,
+      "merged_at": "2026-09-04"
+    },
+    "E3-S2-start-stop-workspace": {
+      "status": "merged",
+      "branch": "e3-s2-start-stop-workspace",
+      "commit": "01d7d3c",
+      "pr": 13,
+      "merged_at": "2026-09-04"
+    },
+    "E3-S3-doctor": {
+      "status": "merged",
+      "branch": "e3-s3-doctor",
+      "commit": "d889e1f",
+      "pr": 14,
+      "merged_at": "2026-09-04"
+    },
+    "E4-S0-capability-contract-y-registry": {
+      "status": "merged",
+      "branch": "e4-s0-capability-contract-y-registry",
+      "commit": "8f1c13b",
+      "pr": 15,
+      "merged_at": "2026-09-04"
+    },
+    "E4-S1-lifecycle-hooks": {
+      "status": "merged",
+      "branch": "e4-s1-lifecycle-hooks",
+      "commit": "9a58eda",
+      "pr": 16,
+      "merged_at": "2026-09-04"
+    },
+    "E4-S2-procesos-administrados": {
+      "status": "merged",
+      "branch": "e4-s2-procesos-administrados",
+      "commit": "e72692d",
+      "pr": 17,
+      "merged_at": "2026-09-04"
+    },
+    "E5-S0-capability-tmux": {
+      "status": "merged",
+      "branch": "e5-s0-capability-tmux",
+      "commit": "0c5dec0",
+      "pr": 18,
+      "merged_at": "2026-09-04"
+    },
+    "E5-S1-integration-contract-y-open": {
+      "status": "merged",
+      "branch": "e5-s1-integration-contract-y-open",
+      "commit": "98d2c34",
+      "pr": 19,
+      "merged_at": "2026-09-04"
+    },
+    "E5-S2-integraciones-iniciales": {
+      "status": "merged",
+      "branch": "e5-s2-integraciones-iniciales",
+      "commit": "ba3cb15",
+      "pr": 20,
+      "merged_at": "2026-09-04"
+    },
+    "E6-S0-runtime-capability-contract": {
+      "status": "merged",
+      "branch": "e6-s0-runtime-capability-contract",
+      "commit": "6726558",
+      "pr": 21,
+      "merged_at": "2026-09-04"
+    },
+    "E6-S1-gestion-puertos": {
+      "status": "merged",
+      "branch": "e6-s1-gestion-puertos",
+      "commit": "4885a86",
+      "pr": 22,
+      "merged_at": "2026-09-04"
+    },
+    "E6-S2-docker-compose-runtime-driver": {
+      "status": "merged",
+      "branch": "e6-s2-docker-compose-runtime-driver",
+      "commit": "cad1cd3",
+      "pr": 23,
+      "merged_at": "2026-09-04"
+    },
+    "E6-S3-tunnel-capability-zrok": {
+      "status": "merged",
+      "branch": "e6-s3-tunnel-capability-zrok",
+      "commit": "2e6c0db",
+      "pr": 24,
+      "merged_at": "2026-09-04"
+    },
+    "E7-S0-transacciones-y-rollback-lifecycle": {
+      "status": "merged",
+      "branch": "e7-s0-transacciones-y-rollback-lifecycle",
+      "commit": "dabe25f",
+      "pr": 25,
+      "merged_at": "2026-09-04"
+    },
+    "E7-S1-locks-y-concurrencia": {
+      "status": "merged",
+      "branch": "e7-s1-locks-y-concurrencia",
+      "commit": "770cd62",
+      "pr": 26,
+      "merged_at": "2026-09-04"
+    },
+    "E7-S2-seguridad-y-path-boundaries": {
+      "status": "merged",
+      "branch": "e7-s2-seguridad-y-path-boundaries",
+      "commit": "e3d9d44",
+      "pr": 27,
+      "merged_at": "2026-09-04"
+    },
+    "E7-S3-suite-conformidad": {
+      "status": "merged",
+      "branch": "e7-s3-suite-conformidad",
+      "commit": "0a9e175",
+      "pr": 28,
+      "merged_at": "2026-09-04"
+    },
+    "E8-S0-configuracion-sivale": {
+      "status": "merged",
+      "branch": "e8-s0-configuracion-sivale",
+      "commit": "c4e8374",
+      "pr": 29,
+      "merged_at": "2026-09-04"
+    },
+    "E8-S1-paridad-lifecycle-sivale": {
+      "status": "merged",
+      "branch": "e8-s1-paridad-lifecycle-sivale",
+      "commit": "3228ee6",
+      "pr": 30,
+      "merged_at": "2026-09-04",
+      "validation_status": "provisioning_parity_closed_pending_operational_evidence",
+      "evidence": "deterministic-conformance-complete",
+      "evidence_note": "E10-S0..S4 closed the workspace provisioning gaps (runtime provisioning, PostgreSQL data provisioning, Composer dependencies/readiness and equivalent cleanup): the SiVale config expresses the full lifecycle via E10 contracts and DETERMINISTIC_PARITY is PASS (suite + conformance). SIVALE_PARITY (operational) stays PENDING_OPERATIONAL_EVIDENCE until the real pilot on the SiVale environment (docker-compose/PostgreSQL/tmux/Kiro + real concurrency) runs; tracked in docs/evidence/sivale-e10-pilot.md and docs/examples/sivale-parity-matrix.md section 6.",
+      "closure_blocked_by": null,
+      "operational_evidence": "PENDING (real SiVale pilot; see docs/evidence/sivale-e10-pilot.md)"
+    },
+    "E8-S2-migracion-operativa-sivale": {
+      "status": "merged",
+      "branch": "e8-s2-migracion-operativa-sivale",
+      "commit": "dc87166",
+      "pr": 31,
+      "merged_at": "2026-09-04",
+      "validation_status": "provisioning_parity_closed_pending_operational_evidence",
+      "evidence": "deterministic-conformance-complete",
+      "evidence_note": "E10-S4 proves that no legacy script retains an exclusive responsibility needed by the supported lifecycle (see docs/examples/sivale-parity-matrix.md section 7). DETERMINISTIC_PARITY (contract + deterministic evidence) is PASS; the physical removal of the legacy scripts belongs to the SiVale repo and proceeds only after SIVALE_PARITY (real operational pilot, recorded in docs/evidence/sivale-e10-pilot.md) reaches PASS.",
+      "closure_blocked_by": null,
+      "operational_evidence": "PENDING (real SiVale pilot; see docs/evidence/sivale-e10-pilot.md)"
+    },
+    "E9-S0-segundo-proyecto-piloto": {
+      "status": "merged",
+      "branch": "e9-s0-segundo-proyecto-piloto",
+      "commit": "7780200",
+      "pr": 32,
+      "merged_at": "2026-09-04",
+      "validation_status": "pending_operational_evidence",
+      "evidence": "synthetic-fixture-only",
+      "evidence_note": "pylib-tools is a synthetic conformance fixture built inside the test, proving the core supports a non-SiVale profile. It is NOT evidence that a real second iMass project adopted imass-worktree. Real closure requires adopting a real second repo per docs/second-pilot-checklist.md."
+    },
+    "E9-S1-instalacion-y-distribucion-empresarial": {
+      "status": "merged",
+      "branch": "e9-s1-instalacion-y-distribucion-empresarial",
+      "commit": "595caa5",
+      "pr": 33,
+      "merged_at": "2026-09-04"
+    },
+    "E9-S2-estandar-de-adopcion-imass": {
+      "status": "merged",
+      "branch": "e9-s2-estandar-de-adopcion-imass",
+      "commit": "598417f",
+      "pr": 34,
+      "merged_at": "2026-09-04"
+    },
+    "E9-S3-convergencia-contrato-post-auditoria": {
+      "status": "merged",
+      "branch": "e9-s3-convergencia-contrato-post-auditoria",
+      "commit": "c611d83",
+      "pr": 37,
+      "merged_at": "2026-09-07",
+      "note": "Integrations public-contract convergence (argv command, pass_env allowlist, inherit_env removed). Full suite green on final HEAD (575 passed, 4 pre-existing skips). Merge commit e973785 confirmed via `gh pr view 37`; tracking was stale (recorded as in_review after actual merge)."
+    },
+    "E10-S0-contrato-provisioning-workspace": {
+      "status": "merged",
+      "branch": "e10-s0-contrato-provisioning-workspace",
+      "commit": "70e60df",
+      "pr": 39,
+      "merged_at": "2026-09-07",
+      "depends_on": [
+        "E9-S3-convergencia-contrato-post-auditoria"
+      ],
+      "audit_status": "PASS",
+      "suite_status": "full-suite-green",
+      "evidence_note": "Generic workspace provisioning contract implemented on the existing lifecycle: added exactly LifecycleEvent.AFTER_ADOPT (no BEFORE_ADOPT, no new CLI); AdoptWorkspaceService now opens the common LifecycleTransaction and runs after_adopt via HookRunner in both successful modes (existing-worktree records only capability mutations; created-worktree includes the created worktree in the same transaction). init keeps using AFTER_INIT. No technology-specific logic, no new registry/transaction/lock/runner, no framework/project conditionals. Added tests/unit/test_e10_s0_provisioning_contract.py (AC-02..AC-06, AC-08, Git-only AC-01) plus event classification. Full suite + conformance green.",
+      "note": "Define generic workspace provisioning contract; no technology-specific implementation in the core."
+    },
+    "E10-S1-runtime-provisioning-lifecycle": {
+      "status": "merged",
+      "branch": "e10-s1-runtime-provisioning-lifecycle",
+      "commit": "c01705d",
+      "pr": 40,
+      "merged_at": "2026-09-07",
+      "depends_on": [
+        "E10-S0-contrato-provisioning-workspace"
+      ],
+      "audit_status": "PASS",
+      "suite_status": "full-suite-green",
+      "evidence_note": "Extended the existing runtime (no new subsystem): RuntimeDriver gains provision(); NoneRuntimeDriver.provision() is a NOT_APPLICABLE no-op; added the optional RuntimeCommandExecutor protocol (ensure_service/exec) with RuntimeScope project|workspace and exact RuntimeExecRequest/RuntimeExecResult. [capabilities.runtime] gains six opt-in keys with safe defaults, validated fail-closed by the driver. DockerComposeDriver implements provision (materialize env, up -d, --build opt-in), the executor (project vs workspace identity, exec -T with structured argv via SafeProcessRunner run_bytes, shell=False) and down -v only when remove_volumes_on_destroy. RuntimeCapability wires AFTER_INIT/AFTER_ADOPT by flag and compensates provision with stop. Only docker-compose implements the executor; none does not. No new drivers. Tests: tests/unit/test_e10_s1_runtime_provisioning.py. Full suite + conformance green.",
+      "note": "Extend existing runtime lifecycle for opt-in provisioning; first concrete driver remains docker-compose."
+    },
+    "E10-S2-bootstrap-dependencias-y-readiness": {
+      "status": "merged",
+      "branch": "e10-s2-bootstrap-dependencias-y-readiness",
+      "commit": "74bf07a",
+      "pr": 41,
+      "merged_at": "2026-09-07",
+      "depends_on": [
+        "E10-S0-contrato-provisioning-workspace"
+      ],
+      "audit_status": "PASS",
+      "suite_status": "full-suite-green",
+      "evidence_note": "New optional BootstrapCapability under [capabilities.bootstrap], provider registry with composer only, fixed 'composer' executable. Host and runtime executors, fixed writable probe, artifact readiness, AFTER_INIT/AFTER_ADOPT wiring, fail-closed config, partial mutation recorded NOT_SAFE. Registered after runtime and before tunnel; data inserted between runtime and bootstrap in E10-S3. Tests: tests/unit/test_e10_s2_bootstrap.py. Full suite + conformance green.",
+      "note": "Add minimal dependency/readiness provisioning; first real dependency provider is Composer only."
+    },
+    "E10-S3-data-provisioning-postgres": {
+      "status": "merged",
+      "branch": "e10-s3-data-provisioning-postgres",
+      "commit": "56b0e43",
+      "pr": 42,
+      "merged_at": "2026-09-07",
+      "depends_on": [
+        "E10-S0-contrato-provisioning-workspace",
+        "E10-S1-runtime-provisioning-lifecycle"
+      ],
+      "audit_status": "PASS",
+      "suite_status": "full-suite-green",
+      "evidence_note": "New optional DataCapability under [capabilities.data], provider registry with postgres only. Registered after runtime and before bootstrap. Copies the base PostgreSQL DB (project scope) into an isolated per-target DB (workspace scope) over the E10-S1 RuntimeCommandExecutor (never imports Docker). Fixed scopes; ensure_service project+workspace; identity via printenv POSTGRES_USER/POSTGRES_DB (never POSTGRES_PASSWORD); readiness pg_isready; snapshot pg_dump --clean --if-exists --no-owner --no-privileges (never printed); restore psql -v ON_ERROR_STOP=1 via stdin. Source never receives restore/DDL. cleanup_mode preserve|runtime; runtime requires docker-compose remove_volumes_on_destroy=true else PROJECT_CONFIG_INVALID (no dropdb). Restore failure NOT_SAFE, no source touch. Tests: tests/unit/test_e10_s3_data_postgres.py. Full suite + conformance green.",
+      "note": "Add optional PostgreSQL data provisioning required by the first real pilot; no other DB providers in scope."
+    },
+    "E10-S4-convergencia-paridad-sivale": {
+      "status": "in_review",
+      "branch": "fix/e10-auditoria-hallazgos-h1-h7",
+      "depends_on": [
+        "E10-S1-runtime-provisioning-lifecycle",
+        "E10-S2-bootstrap-dependencias-y-readiness",
+        "E10-S3-data-provisioning-postgres"
+      ],
+      "audit_status": "PASS_AFTER_REMEDIATION",
+      "suite_status": "full-suite-green",
+      "deterministic_parity": "PASS",
+      "sivale_parity": "PENDING_OPERATIONAL_EVIDENCE",
+      "operational_evidence": "PENDING (real SiVale pilot; see docs/evidence/sivale-e10-pilot.md)",
+      "evidence_note": "Configures SiVale via docs/examples/sivale.imass-worktree.toml using only E10-S0..S3 contracts (runtime provisioning with build_on_provision/materialize_env_file/compose_files/remove_volumes_on_destroy; data postgres cleanup_mode=runtime; bootstrap composer executor=runtime). No SiVale/Laravel coupling in the core (test_ac07_no_sivale_conditionals_in_core). A full integral E10 audit found 7 real blockers (H1..H7) after the initial S0..S4 merge: H1 shell injection in the bootstrap runtime writable probe, H2 symlink boundary escape in bootstrap (writable probe/artifacts/readiness), H3 materialize_env_file boundary escape + silent overwrite of preexisting/adopted work, H4 [capabilities.runtime] not fail-closed on unknown keys, H5 SiVale example config drift from the real legacy runtime (port_env, missing compose override support, base runtime identity limitation), H6 SIVALE_PARITY declared PASS without the required real pilot, H7 incomplete product documentation. All were remediated on branch fix/e10-auditoria-hallazgos-h1-h7 with regression tests; DETERMINISTIC_PARITY (contract + deterministic evidence) is PASS, but SIVALE_PARITY (E10-S4 R5/R9/AC-05/AC-09, Task 10) explicitly requires the real operational pilot and stays PENDING_OPERATIONAL_EVIDENCE until it runs. Parity matrix docs/examples/sivale-parity-matrix.md section 6 now distinguishes both levels explicitly. Full suite + conformance green. Commit/pr/merged_at recorded on merge.",
+      "note": "Configure and revalidate SiVale parity. SIVALE_PARITY (operational) stays PENDING until the real pilot runs; only DETERMINISTIC_PARITY is PASS. Operational closure of E8-S1/E8-S2 still requires that real pilot evidence."
+    }
+  }
+}
